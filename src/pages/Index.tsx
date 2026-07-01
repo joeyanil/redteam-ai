@@ -1,42 +1,16 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels'
 import NavRail, { ActiveTab } from '@/components/NavRail'
+import ChatPanel from '@/components/chat/ChatPanel'
+import IDEPanel from '@/components/ide/IDEPanel'
 import { useFileSystem } from '@/hooks/useFileSystem'
 import { useAIChat } from '@/hooks/useAIChat'
-import { usePiston } from '@/hooks/usePiston'
-
-// Placeholders — we'll replace these in Phase 4 & 5
-function ChatPanel() {
-  return (
-    <div className="flex h-full items-center justify-center text-neon-cyan text-glow-cyan text-sm">
-      [ CHAT ONLINE ]
-    </div>
-  )
-}
-
-function IDEPanel() {
-  return (
-    <div className="flex h-full items-center justify-center text-neon-purple text-glow-purple text-sm">
-      [ IDE ONLINE ]
-    </div>
-  )
-}
-
-function OutputPanel() {
-  return (
-    <div className="flex h-full items-center justify-center text-neon-amber text-sm">
-      [ OUTPUT ONLINE ]
-    </div>
-  )
-}
 
 export default function Index() {
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
   const [isMobile, setIsMobile] = useState(window.innerWidth < 1024)
-
   const fs = useFileSystem()
   const chat = useAIChat()
-  const piston = usePiston()
 
   useEffect(() => {
     const handler = () => setIsMobile(window.innerWidth < 1024)
@@ -44,54 +18,86 @@ export default function Index() {
     return () => window.removeEventListener('resize', handler)
   }, [])
 
+  const handleSendToIDE = useCallback((filename: string, content: string) => {
+    fs.injectFile(filename, content)
+    if (isMobile) setActiveTab('editor')
+  }, [fs, isMobile])
+
+  const handleAskAI = useCallback((content: string) => {
+    if (isMobile) setActiveTab('chat')
+    // Slight delay so tab switch completes before message sends
+    setTimeout(() => {
+      const event = new CustomEvent('redteam:ask-ai', { detail: content })
+      window.dispatchEvent(event)
+    }, 100)
+  }, [isMobile])
+
   return (
-    <div className="scanlines flex h-full w-full overflow-hidden bg-dark-base">
+    <div className="scanlines flex h-full w-full flex-col overflow-hidden bg-dark-base">
       {/* Header */}
-      <div className="fixed top-0 left-0 right-0 z-40 flex h-8 items-center justify-between
-        border-b border-dark-border bg-dark-panel px-4">
-        <span className="text-xs text-neon-green text-glow-green animate-flicker font-bold tracking-widest">
+      <div className="flex h-8 shrink-0 items-center justify-between
+        border-b border-dark-border bg-dark-panel px-4 z-40">
+        <span className="text-xs font-bold text-neon-green text-glow-green animate-flicker tracking-widest">
           ⬡ REDTEAM-AI
         </span>
-        <span className="text-xs text-gray-600">
+        <span className="text-xs text-gray-600 truncate max-w-[160px]">
           {fs.activeProject?.name}
         </span>
-        <span className="text-xs text-neon-purple">
+        <span className={`text-xs font-mono ${chat.streaming ? 'text-neon-amber' : 'text-neon-purple'}`}>
           {chat.streaming ? '● STREAMING' : '○ READY'}
         </span>
       </div>
 
-      {/* Body — below header */}
-      <div className="flex h-full w-full pt-8" style={{ height: '100dvh' }}>
+      {/* Body */}
+      <div className="flex flex-1 overflow-hidden">
 
-        {/* Desktop layout */}
+        {/* Desktop */}
         {!isMobile && (
           <>
-            <NavRail activeTab={activeTab} setActiveTab={setActiveTab} isMobile={false} />
+            <NavRail
+              activeTab={activeTab}
+              setActiveTab={setActiveTab}
+              isMobile={false}
+            />
             <PanelGroup direction="horizontal" className="flex-1">
-              <Panel defaultSize={35} minSize={20}>
-                <ChatPanel />
+              <Panel defaultSize={38} minSize={20}>
+                <ChatPanel
+                  onSendToIDE={handleSendToIDE}
+                  onAskAI={handleAskAI}
+                />
               </Panel>
               <PanelResizeHandle className="w-1 bg-dark-border hover:bg-neon-purple transition-colors cursor-col-resize" />
-              <Panel defaultSize={40} minSize={20}>
-                <IDEPanel />
-              </Panel>
-              <PanelResizeHandle className="w-1 bg-dark-border hover:bg-neon-purple transition-colors cursor-col-resize" />
-              <Panel defaultSize={25} minSize={15}>
-                <OutputPanel />
+              <Panel defaultSize={62} minSize={30}>
+                <IDEPanel onAskAI={handleAskAI} />
               </Panel>
             </PanelGroup>
           </>
         )}
 
-        {/* Mobile layout */}
+        {/* Mobile */}
         {isMobile && (
           <div className="flex flex-1 flex-col overflow-hidden">
             <div className="flex-1 overflow-hidden pb-14">
-              {activeTab === 'chat'   && <ChatPanel />}
-              {activeTab === 'editor' && <IDEPanel />}
-              {activeTab === 'output' && <OutputPanel />}
+              {activeTab === 'chat' && (
+                <ChatPanel
+                  onSendToIDE={handleSendToIDE}
+                  onAskAI={handleAskAI}
+                />
+              )}
+              {activeTab === 'editor' && (
+                <IDEPanel onAskAI={handleAskAI} />
+              )}
+              {activeTab === 'output' && (
+                <div className="flex h-full items-center justify-center text-neon-amber text-xs">
+                  Switch to Editor tab to run code
+                </div>
+              )}
             </div>
-            <NavRail activeTab={activeTab} setActiveTab={setActiveTab} isMobile={true} />
+            <NavRail
+              activeTab={activeTab}
+              setActiveTab={setActiveTab}
+              isMobile={true}
+            />
           </div>
         )}
 
