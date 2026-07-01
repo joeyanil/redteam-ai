@@ -1,61 +1,152 @@
-import { useState, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { supabase, DbSession, DbMessage } from '@/lib/supabase'
 
 export type Message = {
   id: string
   role: 'user' | 'assistant'
   content: string
-  timestamp: number
+  createdAt: string
 }
 
 export type Session = {
   id: string
   title: string
+  projectId: string | null
   messages: Message[]
-  createdAt: number
+  openFileIds: string[]
+  activeFileId: string | null
+  createdAt: string
 }
 
-function genId() {
-  return Math.random().toString(36).slice(2, 9)
-}
-
-function defaultSession(): Session {
-  return {
-    id: genId(),
-    title: 'New Session',
-    messages: [],
-    createdAt: Date.now(),
-  }
-}
+const ACTIVE_SESSION_KEY = 'redteam_active_session'
 
 export function useAIChat() {
-  const [sessions, setSessions] = useState<Session[]>([defaultSession()])
-  const [activeSessionId, setActiveSessionId] = useState<string>(sessions[0].id)
+  const [sessions, setSessions] = useState<Session[]>([])
+  const [activeSessionId, setActiveSessionIdState] = useState<string>(
+    () => localStorage.getItem(ACTIVE_SESSION_KEY) || ''
+  )
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
 
   const activeSession = sessions.find(s => s.id === activeSessionId) || sessions[0]
 
-  function updateSession(id: string, patch: Partial<Session>) {
-    setSessions(prev => prev.map(s => s.id === id ? { ...s, ...patch } : s))
+  const loadSessions = useCallback(async () => {
+    setLoading(true)
+    const { data: sessionRows } = await supabase
+      .from('sessions')
+      .select('*')
+      .order('updated_at', { ascending: false })
+
+    if (!sessionRows || sessionRows.length === 0) {
+      // Create default session
+      const { data: newSession } = await supabase
+        .from('sessions')
+        .insert({ title: 'New Session' })
+        .select()
+        .single()
+      if (newSession) {
+        setSessions([{
+          id: newSession.id,
+          title: newSession.title,
+          projectId: null,
+          messages: [],
+          openFileIds: [],
+          activeFileId: null,
+          createdAt: newSession.created_at,
+        }])
+        setActiveSessionIdState(newSession.id)
+        localStorage.setItem(ACTIVE_SESSION_KEY, newSession.id)
+      }
+      setLoading(false)
+      return
+    }
+
+    const sessionsWithMessages = await Promise.all(
+      sessionRows.map(async (s: DbSession) => {
+        const { data: msgs } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('session_id', s.id)
+          .order('created_at', { ascending: true })
+        return {
+          id: s.id,
+          title: s.title,
+          projectId: s.project_id,
+          messages: (msgs || []).map((m: DbMessage) => ({
+            id: m.id,
+            role: m.role,
+            content: m.content,
+            createdAt: m.created_at,
+          })),
+          openFileIds: s.open_file_ids || [],
+          activeFileId: s.active_file_id,
+          createdAt: s.created_at,
+        }
+      })
+    )
+
+    setSessions(sessionsWithMessages)
+    const savedId = localStorage.getItem(ACTIVE_SESSION_KEY)
+    const validId = sessionsWithMessages.find(s => s.id === savedId)?.id
+    setActiveSessionIdState(validId || sessionsWithMessages[0]?.id || '')
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { loadSessions() }, [loadSessions])
+
+  function setActiveSessionId(id: string) {
+    setActiveSessionIdState(id)
+    localStorage.setItem(ACTIVE_SESSION_KEY, id)
   }
 
-  function newSession() {
-    const s = defaultSession()
-    setSessions(prev => [...prev, s])
-    setActiveSessionId(s.id)
+  async function newSession(projectId?: string) {
+    const { data } = await supabase
+      .from('sessions')
+      .insert({ title: 'New Session', project_id: projectId || null })
+      .select()
+      .single()
+    if (data) {
+      const s: Session = {
+        id: data.id,
+        title: data.title,
+        projectId: data.project_id,
+        messages: [],
+        openFileIds: [],
+        activeFileId: null,
+        createdAt: data.created_at,
+      }
+      setSessions(prev => [s, ...prev])
+      setActiveSessionId(data.id)
+    }
   }
 
-  function deleteSession(id: string) {
+  async function deleteSession(id: string) {
+    await supabase.from('sessions').delete().eq('id', id)
     setSessions(prev => {
       const next = prev.filter(s => s.id !== id)
-      if (next.length === 0) {
-        const s = defaultSession()
-        setActiveSessionId(s.id)
-        return [s]
+      if (activeSessionId === id) {
+        const nextId = next[0]?.id || ''
+        setActiveSessionId(nextId)
       }
-      if (activeSessionId === id) setActiveSessionId(next[0].id)
       return next
     })
+  }
+
+  async function renameSession(id: string, title: string) {
+    await supabase.from('sessions').update({ title }).eq('id', id)
+    setSessions(prev => prev.map(s => s.id === id ? { ...s, title } : s))
+  }
+
+  async function syncSessionFiles(
+    sessionId: string,
+    openFileIds: string[],
+    activeFileId: string | null
+  ) {
+    await supabase.from('sessions').update({
+      open_file_ids: openFileIds,
+      active_file_id: activeFileId,
+    }).eq('id', sessionId)
   }
 
   const sendMessage = useCallback(async (
@@ -63,34 +154,52 @@ export function useAIChat() {
     supabaseUrl: string,
     supabaseAnonKey: string
   ) => {
-    if (!content.trim() || streaming) return
+    if (!content.trim() || streaming || !activeSession) return
     setError(null)
 
-    const userMsg: Message = {
-      id: genId(),
+    // Save user message to DB
+    const { data: userMsg } = await supabase.from('messages').insert({
+      session_id: activeSession.id,
       role: 'user',
       content,
-      timestamp: Date.now(),
-    }
+    }).select().single()
 
-    const assistantId = genId()
-    const assistantMsg: Message = {
-      id: assistantId,
+    if (!userMsg) return
+
+    // Create assistant placeholder
+    const { data: assistantMsg } = await supabase.from('messages').insert({
+      session_id: activeSession.id,
       role: 'assistant',
       content: '',
-      timestamp: Date.now(),
-    }
+    }).select().single()
 
-    // Auto-title from first message
+    if (!assistantMsg) return
+
+    // Auto title from first message
     const isFirst = activeSession.messages.length === 0
     const newTitle = isFirst
       ? content.slice(0, 40) + (content.length > 40 ? '...' : '')
       : activeSession.title
 
-    updateSession(activeSessionId, {
-      title: newTitle,
-      messages: [...activeSession.messages, userMsg, assistantMsg],
-    })
+    if (isFirst) {
+      await supabase.from('sessions')
+        .update({ title: newTitle })
+        .eq('id', activeSession.id)
+    }
+
+    // Update local state
+    setSessions(prev => prev.map(s => {
+      if (s.id !== activeSession.id) return s
+      return {
+        ...s,
+        title: newTitle,
+        messages: [
+          ...s.messages,
+          { id: userMsg.id, role: 'user', content, createdAt: userMsg.created_at },
+          { id: assistantMsg.id, role: 'assistant', content: '', createdAt: assistantMsg.created_at },
+        ],
+      }
+    }))
 
     setStreaming(true)
 
@@ -123,10 +232,8 @@ export function useAIChat() {
       while (true) {
         const { done, value } = await reader.read()
         if (done) break
-
         const chunk = decoder.decode(value, { stream: true })
         const lines = chunk.split('\n')
-
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue
           const data = line.slice(6).trim()
@@ -135,41 +242,49 @@ export function useAIChat() {
             const parsed = JSON.parse(data)
             const delta = parsed.choices?.[0]?.delta?.content || ''
             accumulated += delta
-            setSessions(prev =>
-              prev.map(s => {
-                if (s.id !== activeSessionId) return s
-                return {
-                  ...s,
-                  messages: s.messages.map(m =>
-                    m.id === assistantId ? { ...m, content: accumulated } : m
-                  ),
-                }
-              })
-            )
-          } catch {
-            // skip malformed chunk
-          }
+            setSessions(prev => prev.map(s => {
+              if (s.id !== activeSession.id) return s
+              return {
+                ...s,
+                messages: s.messages.map(m =>
+                  m.id === assistantMsg.id ? { ...m, content: accumulated } : m
+                ),
+              }
+            }))
+          } catch { /* skip malformed chunk */ }
         }
       }
+
+      // Save final assistant content to DB
+      await supabase.from('messages')
+        .update({ content: accumulated })
+        .eq('id', assistantMsg.id)
+
+      // Update session updated_at
+      await supabase.from('sessions')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', activeSession.id)
+
     } catch (err) {
       setError(String(err))
-      setSessions(prev =>
-        prev.map(s => {
-          if (s.id !== activeSessionId) return s
-          return {
-            ...s,
-            messages: s.messages.map(m =>
-              m.id === assistantId
-                ? { ...m, content: `⚠ Error: ${String(err)}` }
-                : m
-            ),
-          }
-        })
-      )
+      setSessions(prev => prev.map(s => {
+        if (s.id !== activeSession.id) return s
+        return {
+          ...s,
+          messages: s.messages.map(m =>
+            m.id === assistantMsg.id
+              ? { ...m, content: `⚠ Error: ${String(err)}` }
+              : m
+          ),
+        }
+      }))
+      await supabase.from('messages')
+        .update({ content: `⚠ Error: ${String(err)}` })
+        .eq('id', assistantMsg.id)
     } finally {
       setStreaming(false)
     }
-  }, [activeSessionId, activeSession, streaming])
+  }, [activeSession, streaming])
 
   return {
     sessions,
@@ -178,8 +293,12 @@ export function useAIChat() {
     setActiveSessionId,
     newSession,
     deleteSession,
+    renameSession,
+    syncSessionFiles,
     sendMessage,
     streaming,
     error,
+    loading,
+    reload: loadSessions,
   }
 }
