@@ -1,0 +1,80 @@
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --neon-green:  #00ff9f;
+  --neon-cyan:   #00e5ff;
+  --neon-purple: #bf00ff;
+  --neon-red:    #ff003c;
+  --neon-amber:  #ffaa00;
+  --dark-base:   #0a0a0f;
+  --dark-panel:  #0f0f1a;
+  --dark-border: #1a1a2e;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background: var(--dark-base);
+  color: var(--neon-green);
+  font-family: 'JetBrains Mono', monospace;
+}
+
+::-webkit-scrollbar { width: 4px; height: 4px; }
+::-webkit-scrollbar-track { background: var(--dark-base); }
+::-webkit-scrollbar-thumb { background: var(--neon-purple); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--neon-cyan); }
+
+.text-glow-green  { text-shadow: 0 0 8px #00ff9f; }
+.text-glow-cyan   { text-shadow: 0 0 8px #00e5ff; }
+.text-glow-purple { text-shadow: 0 0 8px #bf00ff; }
+
+.panel-border     { border: 1px solid var(--dark-border); }
+.panel-border-neon{ border: 1px solid var(--neon-purple); box-shadow: 0 0 8px #bf00ff30; }
+
+.btn-neon {
+  background: transparent;
+  border: 1px solid var(--neon-green);
+  color: var(--neon-green);
+  padding: 6px 14px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-neon:hover {
+  background: var(--neon-green);
+  color: var(--dark-base);
+  box-shadow: 0 0 12px #00ff9f;
+}
+.btn-neon-cyan { border-color: var(--neon-cyan); color: var(--neon-cyan); }
+.btn-neon-cyan:hover {
+  background: var(--neon-cyan);
+  color: var(--dark-base);
+  box-shadow: 0 0 12px #00e5ff;
+}
+
+pre, code { font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+
+.terminal-stdout  { color: var(--neon-green); }
+.terminal-stderr  { color: var(--neon-amber); }
+.terminal-exit-ok { color: var(--neon-cyan); }
+.terminal-exit-err{ color: var(--neon-red); }
+
+.scanlines::after {
+  content: '';
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: repeating-linear-gradient(
+    0deg, transparent, transparent 2px,
+    rgba(0,0,0,0.08) 2px, rgba(0,0,0,0.08) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
