@@ -4,8 +4,8 @@ import ChatMessage from './ChatMessage'
 import ChatInput from './ChatInput'
 import ConversationSidebar from './ConversationSidebar'
 
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || ''
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY || ''
+const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || ''
+const SUPABASE_ANON_KEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || ''
 
 interface Props {
   onSendToIDE: (filename: string, content: string) => void
@@ -20,6 +20,18 @@ export default function ChatPanel({ onSendToIDE, onAskAI }: Props) {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chat.activeSession.messages])
+
+  // Listen for Ask AI events from IDE
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const content = (e as CustomEvent).detail
+      if (content) {
+        chat.sendMessage(content, SUPABASE_URL, SUPABASE_ANON_KEY)
+      }
+    }
+    window.addEventListener('redteam:ask-ai', handler)
+    return () => window.removeEventListener('redteam:ask-ai', handler)
+  }, [chat])
 
   function handleSend(content: string) {
     chat.sendMessage(content, SUPABASE_URL, SUPABASE_ANON_KEY)
@@ -36,7 +48,7 @@ export default function ChatPanel({ onSendToIDE, onAskAI }: Props) {
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* Sidebar — hidden on small screens */}
+      {/* Sidebar */}
       <div className="hidden lg:flex">
         <ConversationSidebar
           sessions={chat.sessions}
