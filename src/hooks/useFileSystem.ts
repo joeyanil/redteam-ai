@@ -1,10 +1,12 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { supabase, DbFile, DbProject } from '@/lib/supabase'
 
 export type FileNode = {
   id: string
   name: string
   type: 'file' | 'folder'
   content?: string
+  path: string
   children?: FileNode[]
 }
 
@@ -12,129 +14,158 @@ export type Project = {
   id: string
   name: string
   root: FileNode[]
-  updatedAt: number
+  updatedAt: string
 }
 
-const STORAGE_KEY = 'redteam_projects'
-const ACTIVE_KEY = 'redteam_active_project'
+const ACTIVE_PROJECT_KEY = 'redteam_active_project'
 
-function genId() {
-  return Math.random().toString(36).slice(2, 9)
-}
-
-function defaultProject(): Project {
-  return {
-    id: genId(),
-    name: 'Default',
-    updatedAt: Date.now(),
-    root: [
-      {
-        id: genId(),
-        name: 'main.py',
-        type: 'file',
-        content: '# RedTeam AI — start here\nprint("ready")\n',
-      },
-    ],
-  }
-}
-
-function loadProjects(): Project[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    return raw ? JSON.parse(raw) : [defaultProject()]
-  } catch {
-    return [defaultProject()]
-  }
-}
-
-function saveProjects(projects: Project[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(projects))
-}
-
-// --- Tree helpers ---
-function findNode(nodes: FileNode[], id: string): FileNode | null {
-  for (const n of nodes) {
-    if (n.id === id) return n
-    if (n.children) {
-      const found = findNode(n.children, id)
-      if (found) return found
-    }
-  }
-  return null
-}
-
-function updateNode(nodes: FileNode[], id: string, patch: Partial<FileNode>): FileNode[] {
-  return nodes.map(n => {
-    if (n.id === id) return { ...n, ...patch }
-    if (n.children) return { ...n, children: updateNode(n.children, id, patch) }
-    return n
-  })
-}
-
-function deleteNode(nodes: FileNode[], id: string): FileNode[] {
-  return nodes
-    .filter(n => n.id !== id)
-    .map(n => n.children ? { ...n, children: deleteNode(n.children, id) } : n)
-}
-
-function addNode(nodes: FileNode[], parentId: string | null, node: FileNode): FileNode[] {
-  if (!parentId) return [...nodes, node]
-  return nodes.map(n => {
-    if (n.id === parentId && n.type === 'folder') {
-      return { ...n, children: [...(n.children || []), node] }
-    }
-    if (n.children) return { ...n, children: addNode(n.children, parentId, node) }
-    return n
-  })
+function buildTree(files: DbFile[]): FileNode[] {
+  return files
+    .filter(f => f.path === '/')
+    .map(f => ({
+      id: f.id,
+      name: f.name,
+      type: f.type,
+      content: f.content,
+      path: f.path,
+      children: f.type === 'folder'
+        ? buildTree(files.filter(c => c.path === `/${f.name}`))
+        : undefined,
+    }))
 }
 
 export function useFileSystem() {
-  const [projects, setProjects] = useState<Project[]>(loadProjects)
-  const [activeProjectId, setActiveProjectId] = useState<string>(() => {
-    return localStorage.getItem(ACTIVE_KEY) || projects[0]?.id || ''
-  })
+  const [projects, setProjects] = useState<Project[]>([])
+  const [activeProjectId, setActiveProjectIdState] = useState<string>(
+    () => localStorage.getItem(ACTIVE_PROJECT_KEY) || ''
+  )
   const [openFileIds, setOpenFileIds] = useState<string[]>([])
   const [activeFileId, setActiveFileId] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
 
   const activeProject = projects.find(p => p.id === activeProjectId) || projects[0]
 
-  useEffect(() => {
-    saveProjects(projects)
-  }, [projects])
+  // Load all projects + files
+  const loadProjects = useCallback(async () => {
+    setLoading(true)
+    const { data: projectRows } = await supabase
+      .from('projects')
+      .select('*')
+      .order('created_at', { ascending: true })
 
-  useEffect(() => {
-    localStorage.setItem(ACTIVE_KEY, activeProjectId)
-  }, [activeProjectId])
+    if (!projectRows || projectRows.length === 0) {
+      // Create default project
+      const { data: newProject } = await supabase
+        .from('projects')
+        .insert({ name: 'Default' })
+        .select()
+        .single()
 
-  function updateProject(patch: Partial<Project>) {
-    setProjects(prev =>
-      prev.map(p => p.id === activeProject.id ? { ...p, ...patch, updatedAt: Date.now() } : p)
+      if (newProject) {
+        // Create default file
+        await supabase.from('files').insert({
+          project_id: newProject.id,
+          name: 'main.py',
+          path: '/',
+          content: '# RedTeam AI — start here\nprint("ready")\n',
+          type: 'file',
+        })
+        setProjects([{ id: newProject.id, name: newProject.name, root: [], updatedAt: newProject.updated_at }])
+        setActiveProjectIdState(newProject.id)
+        localStorage.setItem(ACTIVE_PROJECT_KEY, newProject.id)
+      }
+      setLoading(false)
+      return
+    }
+
+    const projectsWithFiles = await Promise.all(
+      projectRows.map(async (p: DbProject) => {
+        const { data: files } = await supabase
+          .from('files')
+          .select('*')
+          .eq('project_id', p.id)
+          .order('name', { ascending: true })
+        return {
+          id: p.id,
+          name: p.name,
+          root: buildTree((files || []) as DbFile[]),
+          updatedAt: p.updated_at,
+        }
+      })
     )
+
+    setProjects(projectsWithFiles)
+
+    const savedId = localStorage.getItem(ACTIVE_PROJECT_KEY)
+    const validId = projectsWithFiles.find(p => p.id === savedId)?.id
+    const firstId = projectsWithFiles[0]?.id
+    setActiveProjectIdState(validId || firstId || '')
+    setLoading(false)
+  }, [])
+
+  useEffect(() => { loadProjects() }, [loadProjects])
+
+  function setActiveProjectId(id: string) {
+    setActiveProjectIdState(id)
+    localStorage.setItem(ACTIVE_PROJECT_KEY, id)
+    setOpenFileIds([])
+    setActiveFileId(null)
   }
 
-  function createFile(name: string, parentId: string | null = null) {
-    const node: FileNode = { id: genId(), name, type: 'file', content: '' }
-    updateProject({ root: addNode(activeProject.root, parentId, node) })
-    openFile(node.id)
+  async function createFile(name: string, parentPath: string = '/') {
+    if (!activeProject) return
+    const { data } = await supabase.from('files').insert({
+      project_id: activeProject.id,
+      name,
+      path: parentPath,
+      content: '',
+      type: 'file',
+    }).select().single()
+    if (data) {
+      await loadProjects()
+      openFile(data.id)
+    }
   }
 
-  function createFolder(name: string, parentId: string | null = null) {
-    const node: FileNode = { id: genId(), name, type: 'folder', children: [] }
-    updateProject({ root: addNode(activeProject.root, parentId, node) })
+  async function createFolder(name: string, parentPath: string = '/') {
+    if (!activeProject) return
+    await supabase.from('files').insert({
+      project_id: activeProject.id,
+      name,
+      path: parentPath,
+      content: '',
+      type: 'folder',
+    })
+    await loadProjects()
   }
 
-  function renameNode(id: string, name: string) {
-    updateProject({ root: updateNode(activeProject.root, id, { name }) })
+  async function renameNode(id: string, name: string) {
+    await supabase.from('files').update({ name }).eq('id', id)
+    await loadProjects()
   }
 
-  function deleteFile(id: string) {
+  async function deleteFile(id: string) {
     setOpenFileIds(prev => prev.filter(f => f !== id))
     if (activeFileId === id) setActiveFileId(null)
-    updateProject({ root: deleteNode(activeProject.root, id) })
+    await supabase.from('files').delete().eq('id', id)
+    await loadProjects()
   }
 
-  function updateFileContent(id: string, content: string) {
-    updateProject({ root: updateNode(activeProject.root, id, { content }) })
+  async function updateFileContent(id: string, content: string) {
+    // Update local state instantly for smooth typing
+    setProjects(prev => prev.map(p => {
+      if (p.id !== activeProject?.id) return p
+      function updateNode(nodes: FileNode[]): FileNode[] {
+        return nodes.map(n => {
+          if (n.id === id) return { ...n, content }
+          if (n.children) return { ...n, children: updateNode(n.children) }
+          return n
+        })
+      }
+      return { ...p, root: updateNode(p.root) }
+    }))
+    // Debounced save to Supabase
+    await supabase.from('files').update({ content }).eq('id', id)
   }
 
   function openFile(id: string) {
@@ -150,27 +181,54 @@ export function useFileSystem() {
     })
   }
 
-  function getFileContent(id: string): string {
-    return findNode(activeProject.root, id)?.content || ''
+  function getFileNode(id: string): FileNode | null {
+    function find(nodes: FileNode[]): FileNode | null {
+      for (const n of nodes) {
+        if (n.id === id) return n
+        if (n.children) { const f = find(n.children); if (f) return f }
+      }
+      return null
+    }
+    return activeProject ? find(activeProject.root) : null
   }
 
-  function createProject(name: string) {
-    const p = { ...defaultProject(), id: genId(), name }
-    setProjects(prev => [...prev, p])
-    setActiveProjectId(p.id)
-    setOpenFileIds([])
-    setActiveFileId(null)
+  async function createProject(name: string) {
+    const { data } = await supabase
+      .from('projects')
+      .insert({ name })
+      .select()
+      .single()
+    if (data) {
+      await supabase.from('files').insert({
+        project_id: data.id,
+        name: 'main.py',
+        path: '/',
+        content: '# New project\n',
+        type: 'file',
+      })
+      await loadProjects()
+      setActiveProjectId(data.id)
+    }
   }
 
-  function injectFile(name: string, content: string) {
+  async function injectFile(name: string, content: string) {
+    if (!activeProject) return
     const existing = activeProject.root.find(n => n.name === name)
     if (existing) {
-      updateFileContent(existing.id, content)
+      await updateFileContent(existing.id, content)
       openFile(existing.id)
     } else {
-      const node: FileNode = { id: genId(), name, type: 'file', content }
-      updateProject({ root: [...activeProject.root, node] })
-      openFile(node.id)
+      const { data } = await supabase.from('files').insert({
+        project_id: activeProject.id,
+        name,
+        path: '/',
+        content,
+        type: 'file',
+      }).select().single()
+      if (data) {
+        await loadProjects()
+        openFile(data.id)
+      }
     }
   }
 
@@ -189,8 +247,10 @@ export function useFileSystem() {
     updateFileContent,
     openFile,
     closeFile,
-    getFileContent,
+    getFileNode,
     createProject,
     injectFile,
+    loading,
+    reload: loadProjects,
   }
 }
