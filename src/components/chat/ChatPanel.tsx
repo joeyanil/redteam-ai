@@ -4,7 +4,7 @@ import { useToolExecutor } from '@/hooks/useToolExecutor'
 import ChatMessage from './ChatMessage'
 import ChatInput from './ChatInput'
 import ConversationSidebar from './ConversationSidebar'
-import { Zap } from 'lucide-react'
+import { Zap, Brain } from 'lucide-react'
 
 const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || ''
 const SUPABASE_ANON_KEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || ''
@@ -55,15 +55,24 @@ export default function ChatPanel({
       SUPABASE_URL,
       SUPABASE_ANON_KEY,
       fileSystem,
-      async (toolCalls) => {
-        await tools.execute(toolCalls)
+      async (name, args) => {
+        await tools.execute(name, args)
       }
     )
   }
 
+  async function handleRegenerate(msgIndex: number) {
+    const messages = chat.activeSession?.messages || []
+    const lastUserMsg = messages.slice(0, msgIndex).reverse().find(m => m.role === 'user')
+    if (lastUserMsg) await handleSend(lastUserMsg.content)
+  }
+
+  async function handleEditResend(content: string) {
+    await handleSend(content)
+  }
+
   function handleFileAttach(text: string, filename: string) {
-    const wrapped = `\`\`\`\n// ${filename}\n${text}\n\`\`\``
-    handleSend(wrapped)
+    handleSend(`\`\`\`\n// ${filename}\n${text}\n\`\`\``)
   }
 
   if (chat.loading) {
@@ -76,7 +85,7 @@ export default function ChatPanel({
 
   return (
     <div className="flex h-full overflow-hidden">
-      {/* Sidebar */}
+      {/* Desktop sidebar */}
       <div className="hidden lg:flex">
         <ConversationSidebar
           sessions={chat.sessions}
@@ -106,24 +115,32 @@ export default function ChatPanel({
           ))}
           <button
             onClick={() => chat.newSession(activeProjectId)}
-            className="shrink-0 text-gray-600 hover:text-neon-green px-1"
+            className="shrink-0 text-gray-600 hover:text-neon-green px-1 text-lg"
           >+</button>
         </div>
 
-        {/* Agent actions indicator */}
-        {chat.agentActions.length > 0 && (
-          <div className="border-b border-dark-border bg-dark-panel px-3 py-1.5">
-            <div className="flex flex-wrap gap-2">
-              {chat.agentActions.map((a, i) => (
-                <span key={i} className="flex items-center gap-1 text-xs text-neon-amber">
-                  <Zap size={10} />
-                  {a.name}
-                  {a.args.path && (
-                    <span className="text-neon-cyan">→ {a.args.path}</span>
-                  )}
-                </span>
-              ))}
-            </div>
+        {/* Thinking indicator */}
+        {chat.thinking.active && (
+          <div className="flex items-center gap-2 border-b border-dark-border bg-dark-panel px-3 py-1.5">
+            <Brain size={12} className="text-neon-purple animate-pulse" />
+            <span className="text-xs text-neon-purple animate-pulse">
+              {chat.thinking.status}
+            </span>
+          </div>
+        )}
+
+        {/* Agent actions */}
+        {chat.agentActions.length > 0 && !chat.thinking.active && (
+          <div className="flex flex-wrap gap-2 border-b border-dark-border bg-dark-panel px-3 py-1.5">
+            {chat.agentActions.map((a, i) => (
+              <span key={i} className="flex items-center gap-1 text-xs text-neon-amber">
+                <Zap size={10} />
+                {a.name}
+                {a.args?.path && (
+                  <span className="text-neon-cyan">→ {a.args.path}</span>
+                )}
+              </span>
+            ))}
           </div>
         )}
 
@@ -138,18 +155,30 @@ export default function ChatPanel({
               </p>
               <div className="mt-2 flex flex-col gap-1 text-xs text-gray-700">
                 <span>↳ AI creates files autonomously</span>
-                <span>↳ No IDE button needed</span>
+                <span>↳ Streaming tool calls</span>
                 <span>↳ Full security context</span>
               </div>
             </div>
           )}
-          {chat.activeSession?.messages.map(msg => (
+
+          {chat.activeSession?.messages.map((msg, index) => (
             <ChatMessage
               key={msg.id}
               message={msg}
               onSendToIDE={onSendToIDE}
+              onRegenerate={
+                msg.role === 'assistant'
+                  ? () => handleRegenerate(index)
+                  : undefined
+              }
+              onEdit={
+                msg.role === 'user'
+                  ? (newContent) => handleEditResend(newContent)
+                  : undefined
+              }
             />
           ))}
+
           {chat.error && (
             <div className="rounded border border-neon-red px-3 py-2 text-xs text-neon-red mb-4">
               ⚠ {chat.error}
@@ -161,7 +190,7 @@ export default function ChatPanel({
         {/* Input */}
         <ChatInput
           onSend={handleSend}
-          onStop={() => {}}
+          onStop={chat.stopStreaming}
           streaming={chat.streaming}
           onFileAttach={handleFileAttach}
         />
