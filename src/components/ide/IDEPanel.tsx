@@ -15,13 +15,8 @@ interface Props {
 export default function IDEPanel({ onAskAI }: Props) {
   const fs = useFileSystem()
   const piston = usePiston()
-  const [pistonResult, setPistonResult] = useState(piston.result)
+  const [, setForce] = useState(0)
 
-  const activeFile = fs.activeFileId
-    ? { id: fs.activeFileId, ...fs.activeProject.root } as any
-    : null
-
-  // Get flat file node by id
   function getFileNode(id: string) {
     function find(nodes: any[]): any {
       for (const n of nodes) {
@@ -30,16 +25,16 @@ export default function IDEPanel({ onAskAI }: Props) {
       }
       return null
     }
-    return find(fs.activeProject.root)
+    return fs.activeProject ? find(fs.activeProject.root) : null
   }
 
   const currentFile = fs.activeFileId ? getFileNode(fs.activeFileId) : null
   const detectedLang = currentFile ? piston.detectLang(currentFile.name).language : 'python'
 
   async function handleRun(langOverride?: string) {
-    if (!currentFile) return
+    if (!currentFile || !fs.activeProject) return
     await piston.run(currentFile, fs.activeProject.root, langOverride)
-    setPistonResult(piston.result)
+    setForce(f => f + 1)
   }
 
   function handleAskAI() {
@@ -48,17 +43,35 @@ export default function IDEPanel({ onAskAI }: Props) {
     onAskAI(msg)
   }
 
+  // Adapter — FileTree expects (name, parentId: string | null)
+  // useFileSystem.createFile expects (name, parentPath?: string)
+  function handleCreateFile(name: string, parentId: string | null) {
+    fs.createFile(name, parentId ?? undefined)
+  }
+
+  function handleCreateFolder(name: string, parentId: string | null) {
+    fs.createFolder(name, parentId ?? undefined)
+  }
+
+  if (fs.loading) {
+    return (
+      <div className="flex h-full items-center justify-center text-neon-green animate-flicker text-xs">
+        ▌ Loading files...
+      </div>
+    )
+  }
+
   return (
     <div className="flex h-full overflow-hidden">
       <PanelGroup direction="horizontal">
         {/* File Tree */}
         <Panel defaultSize={25} minSize={15}>
           <FileTree
-            nodes={fs.activeProject.root}
+            nodes={fs.activeProject?.root || []}
             activeFileId={fs.activeFileId}
             onOpen={fs.openFile}
-            onCreate={fs.createFile}
-            onCreateFolder={fs.createFolder}
+            onCreate={handleCreateFile}
+            onCreateFolder={handleCreateFolder}
             onRename={fs.renameNode}
             onDelete={fs.deleteFile}
           />
@@ -69,7 +82,6 @@ export default function IDEPanel({ onAskAI }: Props) {
         {/* Editor + Terminal */}
         <Panel defaultSize={75}>
           <div className="flex h-full flex-col">
-            {/* Tabs */}
             <EditorTabs
               openFileIds={fs.openFileIds}
               activeFileId={fs.activeFileId}
@@ -77,13 +89,10 @@ export default function IDEPanel({ onAskAI }: Props) {
               onSelect={fs.openFile}
               onClose={fs.closeFile}
             />
-
-            {/* Editor */}
             <div className="flex-1 overflow-hidden">
               <PanelGroup direction="vertical">
                 <Panel defaultSize={65} minSize={30}>
-                  <div className="h-full">
-                    {/* Ask AI toolbar */}
+                  <div className="h-full flex flex-col">
                     {currentFile && onAskAI && (
                       <div className="flex justify-end border-b border-dark-border bg-dark-panel px-2 py-1">
                         <button
@@ -94,12 +103,14 @@ export default function IDEPanel({ onAskAI }: Props) {
                         </button>
                       </div>
                     )}
-                    <CodeEditor
-                      file={currentFile}
-                      onChange={content => {
-                        if (fs.activeFileId) fs.updateFileContent(fs.activeFileId, content)
-                      }}
-                    />
+                    <div className="flex-1">
+                      <CodeEditor
+                        file={currentFile}
+                        onChange={content => {
+                          if (fs.activeFileId) fs.updateFileContent(fs.activeFileId, content)
+                        }}
+                      />
+                    </div>
                   </div>
                 </Panel>
 
@@ -110,7 +121,7 @@ export default function IDEPanel({ onAskAI }: Props) {
                     <Terminal
                       result={piston.result}
                       running={piston.running}
-                      onClear={() => setPistonResult(null)}
+                      onClear={() => setForce(f => f + 1)}
                     />
                     <RunControls
                       activeFile={currentFile}
