@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase, DbSession, DbMessage } from '@/lib/supabase'
 
 export type Message = {
@@ -6,7 +6,6 @@ export type Message = {
   role: 'user' | 'assistant'
   content: string
   createdAt: string
-  toolCalls?: any[]
 }
 
 export type Session = {
@@ -25,6 +24,11 @@ export type AgentAction = {
   success: boolean
 }
 
+export type ThinkingState = {
+  active: boolean
+  status: string
+}
+
 const ACTIVE_SESSION_KEY = 'redteam_active_session'
 
 export function useAIChat() {
@@ -36,6 +40,8 @@ export function useAIChat() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [agentActions, setAgentActions] = useState<AgentAction[]>([])
+  const [thinking, setThinking] = useState<ThinkingState>({ active: false, status: '' })
+  const abortRef = useRef<AbortController | null>(null)
 
   const activeSession = sessions.find(s => s.id === activeSessionId) || sessions[0]
 
@@ -132,9 +138,7 @@ export function useAIChat() {
     await supabase.from('sessions').delete().eq('id', id)
     setSessions(prev => {
       const next = prev.filter(s => s.id !== id)
-      if (activeSessionId === id) {
-        setActiveSessionId(next[0]?.id || '')
-      }
+      if (activeSessionId === id) setActiveSessionId(next[0]?.id || '')
       return next
     })
   }
@@ -155,36 +159,37 @@ export function useAIChat() {
     }).eq('id', sessionId)
   }
 
+  function stopStreaming() {
+    abortRef.current?.abort()
+    setStreaming(false)
+    setThinking({ active: false, status: '' })
+  }
+
   const sendMessage = useCallback(async (
     content: string,
     supabaseUrl: string,
     supabaseAnonKey: string,
     fileSystem?: any[],
-    onToolCall?: (calls: any[]) => Promise<void>
+    onToolCall?: (name: string, args: any) => Promise<void>
   ) => {
     if (!content.trim() || streaming || !activeSession) return
     setError(null)
     setAgentActions([])
 
-    // Save user message
     const { data: userMsg } = await supabase.from('messages').insert({
       session_id: activeSession.id,
       role: 'user',
       content,
     }).select().single()
-
     if (!userMsg) return
 
-    // Create assistant placeholder
     const { data: assistantMsg } = await supabase.from('messages').insert({
       session_id: activeSession.id,
       role: 'assistant',
-      content: '▌',
+      content: '',
     }).select().single()
-
     if (!assistantMsg) return
 
-    // Auto title
     const isFirst = activeSession.messages.length === 0
     const newTitle = isFirst
       ? content.slice(0, 40) + (content.length > 40 ? '...' : '')
@@ -196,7 +201,6 @@ export function useAIChat() {
         .eq('id', activeSession.id)
     }
 
-    // Update local state
     setSessions(prev => prev.map(s => {
       if (s.id !== activeSession.id) return s
       return {
@@ -205,17 +209,21 @@ export function useAIChat() {
         messages: [
           ...s.messages,
           { id: userMsg.id, role: 'user' as const, content, createdAt: userMsg.created_at },
-          { id: assistantMsg.id, role: 'assistant' as const, content: '▌', createdAt: assistantMsg.created_at },
+          { id: assistantMsg.id, role: 'assistant' as const, content: '', createdAt: assistantMsg.created_at },
         ],
       }
     }))
 
     setStreaming(true)
+    setThinking({ active: true, status: 'Initializing agent...' })
 
     const history = [
       ...activeSession.messages.map(m => ({ role: m.role, content: m.content })),
       { role: 'user', content },
     ]
+
+    const abort = new AbortController()
+    abortRef.current = abort
 
     try {
       const res = await fetch(`${supabaseUrl}/functions/v1/ai-chat`, {
@@ -224,48 +232,90 @@ export function useAIChat() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${supabaseAnonKey}`,
         },
-        body: JSON.stringify({
-          messages: history,
-          file_system: fileSystem || [],
-        }),
+        body: JSON.stringify({ messages: history, file_system: fileSystem || [] }),
+        signal: abort.signal,
       })
 
-      if (!res.ok) {
-        const text = await res.text()
-        throw new Error(`HTTP ${res.status}: ${text}`)
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`)
+      if (!res.body) throw new Error('No response body')
 
-      const data = await res.json()
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let finalContent = ''
 
-      // Execute tool calls if any
-      if (data.tool_calls?.length && onToolCall) {
-        const actions = data.tool_calls
-          .filter((tc: any) => tc.name !== 'intent_classify')
-          .map((tc: any) => ({
-            name: tc.name,
-            args: tc.args,
-            success: true,
-          }))
-        setAgentActions(actions)
-        await onToolCall(data.tool_calls)
-      }
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
 
-      const finalContent = data.response || ''
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
 
-      // Update assistant message
-      setSessions(prev => prev.map(s => {
-        if (s.id !== activeSession.id) return s
-        return {
-          ...s,
-          messages: s.messages.map(m =>
-            m.id === assistantMsg.id
-              ? { ...m, content: finalContent }
-              : m
-          ),
+        let currentEvent = ''
+        for (const line of lines) {
+          if (line.startsWith('event: ')) {
+            currentEvent = line.slice(7).trim()
+          } else if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6))
+
+              if (currentEvent === 'thinking') {
+                setThinking({ active: true, status: data.status })
+              }
+
+              else if (currentEvent === 'tool_call') {
+                setAgentActions(prev => [...prev, {
+                  name: data.name,
+                  args: data.args,
+                  success: true,
+                }])
+                setThinking({ active: true, status: `${data.name}: ${data.args.path || ''}` })
+                if (onToolCall) await onToolCall(data.name, data.args)
+              }
+
+              else if (currentEvent === 'tool_result') {
+                setThinking({ active: true, status: `✓ ${data.name}: ${data.path}` })
+              }
+
+              else if (currentEvent === 'text_delta') {
+                finalContent = data.content
+                setSessions(prev => prev.map(s => {
+                  if (s.id !== activeSession.id) return s
+                  return {
+                    ...s,
+                    messages: s.messages.map(m =>
+                      m.id === assistantMsg.id ? { ...m, content: finalContent } : m
+                    ),
+                  }
+                }))
+              }
+
+              else if (currentEvent === 'done') {
+                finalContent = data.content
+                setThinking({ active: false, status: '' })
+                setSessions(prev => prev.map(s => {
+                  if (s.id !== activeSession.id) return s
+                  return {
+                    ...s,
+                    messages: s.messages.map(m =>
+                      m.id === assistantMsg.id ? { ...m, content: finalContent } : m
+                    ),
+                  }
+                }))
+              }
+
+              else if (currentEvent === 'error') {
+                throw new Error(data.message)
+              }
+
+            } catch (parseErr) {
+              // skip malformed lines
+            }
+          }
         }
-      }))
+      }
 
-      // Save to DB
       await supabase.from('messages')
         .update({ content: finalContent })
         .eq('id', assistantMsg.id)
@@ -274,7 +324,8 @@ export function useAIChat() {
         .update({ updated_at: new Date().toISOString() })
         .eq('id', activeSession.id)
 
-    } catch (err) {
+    } catch (err: any) {
+      if (err.name === 'AbortError') return
       setError(String(err))
       const errContent = `⚠ Error: ${String(err)}`
       setSessions(prev => prev.map(s => {
@@ -291,6 +342,7 @@ export function useAIChat() {
         .eq('id', assistantMsg.id)
     } finally {
       setStreaming(false)
+      setThinking({ active: false, status: '' })
     }
   }, [activeSession, streaming])
 
@@ -304,10 +356,12 @@ export function useAIChat() {
     renameSession,
     syncSessionFiles,
     sendMessage,
+    stopStreaming,
     streaming,
     error,
     loading,
     agentActions,
+    thinking,
     reload: loadSessions,
   }
 }
