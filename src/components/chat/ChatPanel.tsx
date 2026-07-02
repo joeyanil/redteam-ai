@@ -1,8 +1,10 @@
 import { useEffect, useRef } from 'react'
 import { useAIChat } from '@/hooks/useAIChat'
+import { useToolExecutor } from '@/hooks/useToolExecutor'
 import ChatMessage from './ChatMessage'
 import ChatInput from './ChatInput'
 import ConversationSidebar from './ConversationSidebar'
+import { Zap } from 'lucide-react'
 
 const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || ''
 const SUPABASE_ANON_KEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || ''
@@ -21,15 +23,13 @@ export default function ChatPanel({
   onSessionChange,
 }: Props) {
   const chat = useAIChat()
+  const tools = useToolExecutor()
   const bottomRef = useRef<HTMLDivElement>(null)
-  const abortRef = useRef<(() => void) | null>(null)
 
-  // Auto scroll on new messages
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [chat.activeSession?.messages])
 
-  // Notify parent when session changes (restore files)
   useEffect(() => {
     if (chat.activeSession && onSessionChange) {
       onSessionChange(
@@ -39,27 +39,31 @@ export default function ChatPanel({
     }
   }, [chat.activeSessionId])
 
-  // Listen for Ask AI events from IDE
   useEffect(() => {
     const handler = (e: Event) => {
       const content = (e as CustomEvent).detail
-      if (content) chat.sendMessage(content, SUPABASE_URL, SUPABASE_ANON_KEY)
+      if (content) handleSend(content)
     }
     window.addEventListener('redteam:ask-ai', handler)
     return () => window.removeEventListener('redteam:ask-ai', handler)
   }, [chat])
 
-  function handleSend(content: string) {
-    chat.sendMessage(content, SUPABASE_URL, SUPABASE_ANON_KEY)
-  }
-
-  function handleStop() {
-    abortRef.current?.()
+  async function handleSend(content: string) {
+    const fileSystem = tools.getFileSystemSnapshot()
+    await chat.sendMessage(
+      content,
+      SUPABASE_URL,
+      SUPABASE_ANON_KEY,
+      fileSystem,
+      async (toolCalls) => {
+        await tools.execute(toolCalls)
+      }
+    )
   }
 
   function handleFileAttach(text: string, filename: string) {
     const wrapped = `\`\`\`\n// ${filename}\n${text}\n\`\`\``
-    chat.sendMessage(wrapped, SUPABASE_URL, SUPABASE_ANON_KEY)
+    handleSend(wrapped)
   }
 
   if (chat.loading) {
@@ -84,9 +88,8 @@ export default function ChatPanel({
         />
       </div>
 
-      {/* Main chat */}
       <div className="flex flex-1 flex-col overflow-hidden">
-        {/* Mobile session selector */}
+        {/* Mobile session bar */}
         <div className="flex lg:hidden items-center gap-2 border-b border-dark-border px-3 py-1.5 overflow-x-auto">
           {chat.sessions.map(s => (
             <button
@@ -98,16 +101,31 @@ export default function ChatPanel({
                   : 'text-gray-600 border border-dark-border'
                 }`}
             >
-              {s.title.slice(0, 16)}
+              {s.title.slice(0, 14)}
             </button>
           ))}
           <button
             onClick={() => chat.newSession(activeProjectId)}
-            className="shrink-0 text-gray-600 hover:text-neon-green transition-colors px-1"
-          >
-            +
-          </button>
+            className="shrink-0 text-gray-600 hover:text-neon-green px-1"
+          >+</button>
         </div>
+
+        {/* Agent actions indicator */}
+        {chat.agentActions.length > 0 && (
+          <div className="border-b border-dark-border bg-dark-panel px-3 py-1.5">
+            <div className="flex flex-wrap gap-2">
+              {chat.agentActions.map((a, i) => (
+                <span key={i} className="flex items-center gap-1 text-xs text-neon-amber">
+                  <Zap size={10} />
+                  {a.name}
+                  {a.args.path && (
+                    <span className="text-neon-cyan">→ {a.args.path}</span>
+                  )}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4">
@@ -118,6 +136,11 @@ export default function ChatPanel({
                 RedTeam AI is ready.<br />
                 <span className="text-neon-purple">Enter your command.</span>
               </p>
+              <div className="mt-2 flex flex-col gap-1 text-xs text-gray-700">
+                <span>↳ AI creates files autonomously</span>
+                <span>↳ No IDE button needed</span>
+                <span>↳ Full security context</span>
+              </div>
             </div>
           )}
           {chat.activeSession?.messages.map(msg => (
@@ -138,7 +161,7 @@ export default function ChatPanel({
         {/* Input */}
         <ChatInput
           onSend={handleSend}
-          onStop={handleStop}
+          onStop={() => {}}
           streaming={chat.streaming}
           onFileAttach={handleFileAttach}
         />
