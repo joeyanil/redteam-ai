@@ -18,6 +18,27 @@ export default function Index() {
     return () => window.removeEventListener('resize', handler)
   }, [])
 
+  // When session changes, restore file state
+  const handleSessionChange = useCallback((
+    openFileIds: string[],
+    activeFileId: string | null
+  ) => {
+    if (openFileIds.length > 0) {
+      openFileIds.forEach(id => fs.openFile(id))
+      if (activeFileId) fs.setActiveFileId(activeFileId)
+    }
+  }, [fs])
+
+  // When files change, sync to active session
+  useEffect(() => {
+    if (!chat.activeSession) return
+    chat.syncSessionFiles(
+      chat.activeSessionId,
+      fs.openFileIds,
+      fs.activeFileId
+    )
+  }, [fs.openFileIds, fs.activeFileId])
+
   const handleSendToIDE = useCallback((filename: string, content: string) => {
     fs.injectFile(filename, content)
     if (isMobile) setActiveTab('editor')
@@ -25,10 +46,8 @@ export default function Index() {
 
   const handleAskAI = useCallback((content: string) => {
     if (isMobile) setActiveTab('chat')
-    // Slight delay so tab switch completes before message sends
     setTimeout(() => {
-      const event = new CustomEvent('redteam:ask-ai', { detail: content })
-      window.dispatchEvent(event)
+      window.dispatchEvent(new CustomEvent('redteam:ask-ai', { detail: content }))
     }, 100)
   }, [isMobile])
 
@@ -64,6 +83,8 @@ export default function Index() {
                 <ChatPanel
                   onSendToIDE={handleSendToIDE}
                   onAskAI={handleAskAI}
+                  activeProjectId={fs.activeProjectId}
+                  onSessionChange={handleSessionChange}
                 />
               </Panel>
               <PanelResizeHandle className="w-1 bg-dark-border hover:bg-neon-purple transition-colors cursor-col-resize" />
@@ -82,6 +103,8 @@ export default function Index() {
                 <ChatPanel
                   onSendToIDE={handleSendToIDE}
                   onAskAI={handleAskAI}
+                  activeProjectId={fs.activeProjectId}
+                  onSessionChange={handleSessionChange}
                 />
               )}
               {activeTab === 'editor' && (
@@ -100,7 +123,6 @@ export default function Index() {
             />
           </div>
         )}
-
       </div>
     </div>
   )
