@@ -6,6 +6,7 @@ export type Message = {
   role: 'user' | 'assistant'
   content: string
   createdAt: string
+  toolCalls?: any[]
 }
 
 export type Session = {
@@ -18,6 +19,12 @@ export type Session = {
   createdAt: string
 }
 
+export type AgentAction = {
+  name: string
+  args: Record<string, any>
+  success: boolean
+}
+
 const ACTIVE_SESSION_KEY = 'redteam_active_session'
 
 export function useAIChat() {
@@ -28,6 +35,7 @@ export function useAIChat() {
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [agentActions, setAgentActions] = useState<AgentAction[]>([])
 
   const activeSession = sessions.find(s => s.id === activeSessionId) || sessions[0]
 
@@ -39,7 +47,6 @@ export function useAIChat() {
       .order('updated_at', { ascending: false })
 
     if (!sessionRows || sessionRows.length === 0) {
-      // Create default session
       const { data: newSession } = await supabase
         .from('sessions')
         .insert({ title: 'New Session' })
@@ -126,8 +133,7 @@ export function useAIChat() {
     setSessions(prev => {
       const next = prev.filter(s => s.id !== id)
       if (activeSessionId === id) {
-        const nextId = next[0]?.id || ''
-        setActiveSessionId(nextId)
+        setActiveSessionId(next[0]?.id || '')
       }
       return next
     })
@@ -152,12 +158,15 @@ export function useAIChat() {
   const sendMessage = useCallback(async (
     content: string,
     supabaseUrl: string,
-    supabaseAnonKey: string
+    supabaseAnonKey: string,
+    fileSystem?: any[],
+    onToolCall?: (calls: any[]) => Promise<void>
   ) => {
     if (!content.trim() || streaming || !activeSession) return
     setError(null)
+    setAgentActions([])
 
-    // Save user message to DB
+    // Save user message
     const { data: userMsg } = await supabase.from('messages').insert({
       session_id: activeSession.id,
       role: 'user',
@@ -170,12 +179,12 @@ export function useAIChat() {
     const { data: assistantMsg } = await supabase.from('messages').insert({
       session_id: activeSession.id,
       role: 'assistant',
-      content: '',
+      content: '▌',
     }).select().single()
 
     if (!assistantMsg) return
 
-    // Auto title from first message
+    // Auto title
     const isFirst = activeSession.messages.length === 0
     const newTitle = isFirst
       ? content.slice(0, 40) + (content.length > 40 ? '...' : '')
@@ -195,8 +204,8 @@ export function useAIChat() {
         title: newTitle,
         messages: [
           ...s.messages,
-          { id: userMsg.id, role: 'user', content, createdAt: userMsg.created_at },
-          { id: assistantMsg.id, role: 'assistant', content: '', createdAt: assistantMsg.created_at },
+          { id: userMsg.id, role: 'user' as const, content, createdAt: userMsg.created_at },
+          { id: assistantMsg.id, role: 'assistant' as const, content: '▌', createdAt: assistantMsg.created_at },
         ],
       }
     }))
@@ -215,7 +224,10 @@ export function useAIChat() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${supabaseAnonKey}`,
         },
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify({
+          messages: history,
+          file_system: fileSystem || [],
+        }),
       })
 
       if (!res.ok) {
@@ -223,63 +235,59 @@ export function useAIChat() {
         throw new Error(`HTTP ${res.status}: ${text}`)
       }
 
-      if (!res.body) throw new Error('No response body')
+      const data = await res.json()
 
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let accumulated = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        const chunk = decoder.decode(value, { stream: true })
-        const lines = chunk.split('\n')
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const data = line.slice(6).trim()
-          if (data === '[DONE]') break
-          try {
-            const parsed = JSON.parse(data)
-            const delta = parsed.choices?.[0]?.delta?.content || ''
-            accumulated += delta
-            setSessions(prev => prev.map(s => {
-              if (s.id !== activeSession.id) return s
-              return {
-                ...s,
-                messages: s.messages.map(m =>
-                  m.id === assistantMsg.id ? { ...m, content: accumulated } : m
-                ),
-              }
-            }))
-          } catch { /* skip malformed chunk */ }
-        }
+      // Execute tool calls if any
+      if (data.tool_calls?.length && onToolCall) {
+        const actions = data.tool_calls
+          .filter((tc: any) => tc.name !== 'intent_classify')
+          .map((tc: any) => ({
+            name: tc.name,
+            args: tc.args,
+            success: true,
+          }))
+        setAgentActions(actions)
+        await onToolCall(data.tool_calls)
       }
 
-      // Save final assistant content to DB
-      await supabase.from('messages')
-        .update({ content: accumulated })
-        .eq('id', assistantMsg.id)
+      const finalContent = data.response || ''
 
-      // Update session updated_at
-      await supabase.from('sessions')
-        .update({ updated_at: new Date().toISOString() })
-        .eq('id', activeSession.id)
-
-    } catch (err) {
-      setError(String(err))
+      // Update assistant message
       setSessions(prev => prev.map(s => {
         if (s.id !== activeSession.id) return s
         return {
           ...s,
           messages: s.messages.map(m =>
             m.id === assistantMsg.id
-              ? { ...m, content: `⚠ Error: ${String(err)}` }
+              ? { ...m, content: finalContent }
               : m
           ),
         }
       }))
+
+      // Save to DB
       await supabase.from('messages')
-        .update({ content: `⚠ Error: ${String(err)}` })
+        .update({ content: finalContent })
+        .eq('id', assistantMsg.id)
+
+      await supabase.from('sessions')
+        .update({ updated_at: new Date().toISOString() })
+        .eq('id', activeSession.id)
+
+    } catch (err) {
+      setError(String(err))
+      const errContent = `⚠ Error: ${String(err)}`
+      setSessions(prev => prev.map(s => {
+        if (s.id !== activeSession.id) return s
+        return {
+          ...s,
+          messages: s.messages.map(m =>
+            m.id === assistantMsg.id ? { ...m, content: errContent } : m
+          ),
+        }
+      }))
+      await supabase.from('messages')
+        .update({ content: errContent })
         .eq('id', assistantMsg.id)
     } finally {
       setStreaming(false)
@@ -299,6 +307,7 @@ export function useAIChat() {
     streaming,
     error,
     loading,
+    agentActions,
     reload: loadSessions,
   }
 }
