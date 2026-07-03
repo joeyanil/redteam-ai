@@ -20,13 +20,19 @@ export type Session = {
 
 export type AgentAction = {
   name: string
-  args: Record<string, any>
+  path: string
   success: boolean
 }
 
 export type ThinkingState = {
   active: boolean
   status: string
+}
+
+export type FileOp = {
+  op: 'create' | 'folder'
+  path: string
+  content?: string
 }
 
 const ACTIVE_SESSION_KEY = 'redteam_active_session'
@@ -42,9 +48,6 @@ export function useAIChat() {
   const [agentActions, setAgentActions] = useState<AgentAction[]>([])
   const [thinking, setThinking] = useState<ThinkingState>({ active: false, status: '' })
   const abortRef = useRef<AbortController | null>(null)
-  // Refs track the message/session currently being streamed into, so the
-  // long-running read loop always writes to the right place even if the
-  // user switches sessions or activeSession changes identity mid-stream.
   const assistantIdRef = useRef<string>('')
   const sessionIdRef = useRef<string>('')
 
@@ -175,7 +178,7 @@ export function useAIChat() {
     supabaseUrl: string,
     supabaseAnonKey: string,
     fileSystem?: any[],
-    onToolCall?: (name: string, args: any) => Promise<void>
+    onFileOp?: (op: FileOp) => Promise<void>
   ) => {
     if (!content.trim() || streaming || !activeSession) return
     setError(null)
@@ -195,8 +198,6 @@ export function useAIChat() {
     }).select().single()
     if (!assistantMsg) return
 
-    // Pin the ids this stream writes to, so the read loop below never
-    // depends on a possibly-stale `activeSession` closure.
     assistantIdRef.current = assistantMsg.id
     sessionIdRef.current = activeSession.id
 
@@ -225,7 +226,7 @@ export function useAIChat() {
     }))
 
     setStreaming(true)
-    setThinking({ active: true, status: 'Initializing agent...' })
+    setThinking({ active: true, status: 'Initializing...' })
 
     const history = [
       ...activeSession.messages.map(m => ({ role: m.role, content: m.content })),
@@ -253,16 +254,7 @@ export function useAIChat() {
       const decoder = new TextDecoder()
       let buffer = ''
       let finalContent = ''
-      // BUG FIX: currentEvent must live OUTSIDE the chunk-read loop.
-      // The old code reset it to '' on every `while(true)` iteration, so
-      // if an SSE event's "event:" line and its "data:" line landed in
-      // different network chunks (very common — that's the whole point of
-      // streaming), the data line would arrive with currentEvent === ''
-      // and get silently dropped. That's why it felt "not streaming."
       let currentEvent = ''
-
-      const aid = assistantIdRef.current
-      const sid = sessionIdRef.current
 
       while (true) {
         const { done, value } = await reader.read()
@@ -276,35 +268,27 @@ export function useAIChat() {
           if (line.startsWith('event: ')) {
             currentEvent = line.slice(7).trim()
           } else if (line.startsWith('data: ')) {
-            const raw = line.slice(6)
-            let data: any
             try {
-              data = JSON.parse(raw)
-            } catch {
-              continue // skip malformed line, but keep currentEvent intact
-            }
+              const data = JSON.parse(line.slice(6))
 
-            try {
               if (currentEvent === 'thinking') {
                 setThinking({ active: true, status: data.status })
               }
 
-              else if (currentEvent === 'tool_call') {
+              else if (currentEvent === 'file_op') {
+                const op = data as FileOp
                 setAgentActions(prev => [...prev, {
-                  name: data.name,
-                  args: data.args,
+                  name: op.op === 'create' ? 'create_file' : 'create_folder',
+                  path: op.path,
                   success: true,
                 }])
-                setThinking({ active: true, status: `${data.name}: ${data.args?.path || ''}` })
-                if (onToolCall) await onToolCall(data.name, data.args)
-              }
-
-              else if (currentEvent === 'tool_result') {
-                setThinking({ active: true, status: `✓ ${data.name}: ${data.path}` })
+                if (onFileOp) await onFileOp(op)
               }
 
               else if (currentEvent === 'text_delta') {
                 finalContent = data.content
+                const aid = assistantIdRef.current
+                const sid = sessionIdRef.current
                 setSessions(prev => prev.map(s => {
                   if (s.id !== sid) return s
                   return {
@@ -319,6 +303,8 @@ export function useAIChat() {
               else if (currentEvent === 'done') {
                 finalContent = data.content
                 setThinking({ active: false, status: '' })
+                const aid = assistantIdRef.current
+                const sid = sessionIdRef.current
                 setSessions(prev => prev.map(s => {
                   if (s.id !== sid) return s
                   return {
@@ -333,21 +319,19 @@ export function useAIChat() {
               else if (currentEvent === 'error') {
                 throw new Error(data.message)
               }
-            } catch (handlerErr) {
-              if (handlerErr instanceof Error && currentEvent === 'error') throw handlerErr
-              // otherwise: don't let a single bad event kill the stream
-            }
+
+            } catch (parseErr) { /* skip */ }
           }
         }
       }
 
       await supabase.from('messages')
         .update({ content: finalContent })
-        .eq('id', aid)
+        .eq('id', assistantMsg.id)
 
       await supabase.from('sessions')
         .update({ updated_at: new Date().toISOString() })
-        .eq('id', sid)
+        .eq('id', activeSession.id)
 
     } catch (err: any) {
       if (err.name === 'AbortError') return
@@ -366,7 +350,7 @@ export function useAIChat() {
       }))
       await supabase.from('messages')
         .update({ content: errContent })
-        .eq('id', aid)
+        .eq('id', assistantMsg.id)
     } finally {
       setStreaming(false)
       setThinking({ active: false, status: '' })
