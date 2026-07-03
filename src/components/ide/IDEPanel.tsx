@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels'
 import { Download } from 'lucide-react'
 import { useFileSystem } from '@/hooks/useFileSystem'
@@ -16,9 +16,8 @@ interface Props {
 export default function IDEPanel({ onAskAI }: Props) {
   const fs = useFileSystem()
   const piston = usePiston()
-  const [, setForce] = useState(0)
   const [unsavedIds, setUnsavedIds] = useState<Set<string>>(new Set())
-  const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  const [, forceUpdate] = useState(0)
 
   function getFileNode(id: string) {
     function find(nodes: any[]): any {
@@ -37,13 +36,12 @@ export default function IDEPanel({ onAskAI }: Props) {
   async function handleRun(langOverride?: string) {
     if (!currentFile || !fs.activeProject) return
     await piston.run(currentFile, fs.activeProject.root, langOverride)
-    setForce(f => f + 1)
+    forceUpdate(f => f + 1)
   }
 
   function handleAskAI() {
     if (!currentFile || !onAskAI) return
-    const msg = `Review this file (${currentFile.name}):\n\`\`\`\n${currentFile.content}\n\`\`\``
-    onAskAI(msg)
+    onAskAI(`Review this file (${currentFile.name}):\n\`\`\`\n${currentFile.content}\n\`\`\``)
   }
 
   function handleDownload() {
@@ -53,38 +51,30 @@ export default function IDEPanel({ onAskAI }: Props) {
     const a = document.createElement('a')
     a.href = url
     a.download = currentFile.name
-    document.body.appendChild(a)
     a.click()
-    a.remove()
     URL.revokeObjectURL(url)
   }
 
-  // Content changes mark the tab "unsaved" immediately, then clear once
-  // the debounced Supabase write in useFileSystem has had time to land.
-  function handleContentChange(content: string) {
-    if (!fs.activeFileId) return
-    const id = fs.activeFileId
-    setUnsavedIds(prev => new Set(prev).add(id))
-    fs.updateFileContent(id, content)
-
-    if (saveTimers.current[id]) clearTimeout(saveTimers.current[id])
-    saveTimers.current[id] = setTimeout(() => {
-      setUnsavedIds(prev => {
-        const next = new Set(prev)
-        next.delete(id)
-        return next
-      })
-    }, 600)
-  }
-
-  // Adapter — FileTree expects (name, parentId: string | null)
-  // useFileSystem.createFile expects (name, parentPath?: string)
   function handleCreateFile(name: string, parentId: string | null) {
     fs.createFile(name, parentId ?? undefined)
   }
 
   function handleCreateFolder(name: string, parentId: string | null) {
     fs.createFolder(name, parentId ?? undefined)
+  }
+
+  function handleContentChange(content: string) {
+    if (!fs.activeFileId) return
+    setUnsavedIds(prev => new Set(prev).add(fs.activeFileId!))
+    fs.updateFileContent(fs.activeFileId, content)
+    // Clear unsaved after 1s (debounce saved)
+    setTimeout(() => {
+      setUnsavedIds(prev => {
+        const next = new Set(prev)
+        next.delete(fs.activeFileId!)
+        return next
+      })
+    }, 1000)
   }
 
   if (fs.loading) {
@@ -98,7 +88,6 @@ export default function IDEPanel({ onAskAI }: Props) {
   return (
     <div className="flex h-full overflow-hidden">
       <PanelGroup direction="horizontal">
-        {/* File Tree */}
         <Panel defaultSize={25} minSize={15}>
           <FileTree
             nodes={fs.activeProject?.root || []}
@@ -113,9 +102,9 @@ export default function IDEPanel({ onAskAI }: Props) {
 
         <PanelResizeHandle className="w-1 bg-dark-border hover:bg-neon-purple transition-colors cursor-col-resize" />
 
-        {/* Editor + Terminal */}
         <Panel defaultSize={75}>
           <div className="flex h-full flex-col">
+            {/* Tabs */}
             <EditorTabs
               openFileIds={fs.openFileIds}
               activeFileId={fs.activeFileId}
@@ -124,32 +113,36 @@ export default function IDEPanel({ onAskAI }: Props) {
               onClose={fs.closeFile}
               unsavedIds={unsavedIds}
             />
+
             <div className="flex-1 overflow-hidden">
               <PanelGroup direction="vertical">
                 <Panel defaultSize={65} minSize={30}>
                   <div className="h-full flex flex-col">
-                    {currentFile && (
-                      <div className="flex items-center justify-between border-b border-dark-border bg-dark-panel px-2 py-1">
-                        <span className="text-xs text-gray-700 truncate">{currentFile.name}</span>
-                        <div className="flex items-center gap-3">
+                    {/* Toolbar */}
+                    <div className="flex items-center justify-between border-b border-dark-border bg-dark-panel px-2 py-1">
+                      <span className="text-xs text-gray-700 truncate">
+                        {currentFile?.name || 'no file open'}
+                      </span>
+                      <div className="flex items-center gap-3">
+                        {currentFile && (
                           <button
                             onClick={handleDownload}
-                            className="flex items-center gap-1 text-xs text-gray-600 hover:text-neon-cyan transition-colors"
+                            className="text-gray-600 hover:text-neon-cyan transition-colors"
                             title="Download file"
                           >
                             <Download size={12} />
                           </button>
-                          {onAskAI && (
-                            <button
-                              onClick={handleAskAI}
-                              className="text-xs text-gray-600 hover:text-neon-cyan transition-colors"
-                            >
-                              ⬡ Ask AI about this file
-                            </button>
-                          )}
-                        </div>
+                        )}
+                        {currentFile && onAskAI && (
+                          <button
+                            onClick={handleAskAI}
+                            className="text-xs text-gray-600 hover:text-neon-cyan transition-colors"
+                          >
+                            ⬡ Ask AI
+                          </button>
+                        )}
                       </div>
-                    )}
+                    </div>
                     <div className="flex-1">
                       <CodeEditor
                         file={currentFile}
@@ -166,7 +159,7 @@ export default function IDEPanel({ onAskAI }: Props) {
                     <Terminal
                       result={piston.result}
                       running={piston.running}
-                      onClear={() => setForce(f => f + 1)}
+                      onClear={() => forceUpdate(f => f + 1)}
                     />
                     <RunControls
                       activeFile={currentFile}
