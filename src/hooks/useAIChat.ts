@@ -42,6 +42,11 @@ export function useAIChat() {
   const [agentActions, setAgentActions] = useState<AgentAction[]>([])
   const [thinking, setThinking] = useState<ThinkingState>({ active: false, status: '' })
   const abortRef = useRef<AbortController | null>(null)
+  // Refs track the message/session currently being streamed into, so the
+  // long-running read loop always writes to the right place even if the
+  // user switches sessions or activeSession changes identity mid-stream.
+  const assistantIdRef = useRef<string>('')
+  const sessionIdRef = useRef<string>('')
 
   const activeSession = sessions.find(s => s.id === activeSessionId) || sessions[0]
 
@@ -190,6 +195,11 @@ export function useAIChat() {
     }).select().single()
     if (!assistantMsg) return
 
+    // Pin the ids this stream writes to, so the read loop below never
+    // depends on a possibly-stale `activeSession` closure.
+    assistantIdRef.current = assistantMsg.id
+    sessionIdRef.current = activeSession.id
+
     const isFirst = activeSession.messages.length === 0
     const newTitle = isFirst
       ? content.slice(0, 40) + (content.length > 40 ? '...' : '')
@@ -243,6 +253,16 @@ export function useAIChat() {
       const decoder = new TextDecoder()
       let buffer = ''
       let finalContent = ''
+      // BUG FIX: currentEvent must live OUTSIDE the chunk-read loop.
+      // The old code reset it to '' on every `while(true)` iteration, so
+      // if an SSE event's "event:" line and its "data:" line landed in
+      // different network chunks (very common — that's the whole point of
+      // streaming), the data line would arrive with currentEvent === ''
+      // and get silently dropped. That's why it felt "not streaming."
+      let currentEvent = ''
+
+      const aid = assistantIdRef.current
+      const sid = sessionIdRef.current
 
       while (true) {
         const { done, value } = await reader.read()
@@ -252,14 +272,19 @@ export function useAIChat() {
         const lines = buffer.split('\n')
         buffer = lines.pop() || ''
 
-        let currentEvent = ''
         for (const line of lines) {
           if (line.startsWith('event: ')) {
             currentEvent = line.slice(7).trim()
           } else if (line.startsWith('data: ')) {
+            const raw = line.slice(6)
+            let data: any
             try {
-              const data = JSON.parse(line.slice(6))
+              data = JSON.parse(raw)
+            } catch {
+              continue // skip malformed line, but keep currentEvent intact
+            }
 
+            try {
               if (currentEvent === 'thinking') {
                 setThinking({ active: true, status: data.status })
               }
@@ -270,7 +295,7 @@ export function useAIChat() {
                   args: data.args,
                   success: true,
                 }])
-                setThinking({ active: true, status: `${data.name}: ${data.args.path || ''}` })
+                setThinking({ active: true, status: `${data.name}: ${data.args?.path || ''}` })
                 if (onToolCall) await onToolCall(data.name, data.args)
               }
 
@@ -281,11 +306,11 @@ export function useAIChat() {
               else if (currentEvent === 'text_delta') {
                 finalContent = data.content
                 setSessions(prev => prev.map(s => {
-                  if (s.id !== activeSession.id) return s
+                  if (s.id !== sid) return s
                   return {
                     ...s,
                     messages: s.messages.map(m =>
-                      m.id === assistantMsg.id ? { ...m, content: finalContent } : m
+                      m.id === aid ? { ...m, content: finalContent } : m
                     ),
                   }
                 }))
@@ -295,11 +320,11 @@ export function useAIChat() {
                 finalContent = data.content
                 setThinking({ active: false, status: '' })
                 setSessions(prev => prev.map(s => {
-                  if (s.id !== activeSession.id) return s
+                  if (s.id !== sid) return s
                   return {
                     ...s,
                     messages: s.messages.map(m =>
-                      m.id === assistantMsg.id ? { ...m, content: finalContent } : m
+                      m.id === aid ? { ...m, content: finalContent } : m
                     ),
                   }
                 }))
@@ -308,9 +333,9 @@ export function useAIChat() {
               else if (currentEvent === 'error') {
                 throw new Error(data.message)
               }
-
-            } catch (parseErr) {
-              // skip malformed lines
+            } catch (handlerErr) {
+              if (handlerErr instanceof Error && currentEvent === 'error') throw handlerErr
+              // otherwise: don't let a single bad event kill the stream
             }
           }
         }
@@ -318,28 +343,30 @@ export function useAIChat() {
 
       await supabase.from('messages')
         .update({ content: finalContent })
-        .eq('id', assistantMsg.id)
+        .eq('id', aid)
 
       await supabase.from('sessions')
         .update({ updated_at: new Date().toISOString() })
-        .eq('id', activeSession.id)
+        .eq('id', sid)
 
     } catch (err: any) {
       if (err.name === 'AbortError') return
       setError(String(err))
       const errContent = `⚠ Error: ${String(err)}`
+      const aid = assistantIdRef.current
+      const sid = sessionIdRef.current
       setSessions(prev => prev.map(s => {
-        if (s.id !== activeSession.id) return s
+        if (s.id !== sid) return s
         return {
           ...s,
           messages: s.messages.map(m =>
-            m.id === assistantMsg.id ? { ...m, content: errContent } : m
+            m.id === aid ? { ...m, content: errContent } : m
           ),
         }
       }))
       await supabase.from('messages')
         .update({ content: errContent })
-        .eq('id', assistantMsg.id)
+        .eq('id', aid)
     } finally {
       setStreaming(false)
       setThinking({ active: false, status: '' })

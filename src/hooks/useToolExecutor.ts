@@ -5,6 +5,10 @@ export function useToolExecutor() {
   const fs = useFileSystem()
 
   const execute = useCallback(async (name: string, args: Record<string, any>) => {
+    if (!args?.path) {
+      console.error(`Tool error [${name}]: missing "path" argument`, args)
+      return
+    }
     try {
       switch (name) {
         case 'create_file': {
@@ -39,6 +43,8 @@ export function useToolExecutor() {
           await fs.createFolder(folderName)
           break
         }
+        default:
+          console.error(`Tool error: unknown tool "${name}"`)
       }
     } catch (err) {
       console.error(`Tool error [${name}]:`, err)
