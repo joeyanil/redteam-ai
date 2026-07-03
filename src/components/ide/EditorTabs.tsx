@@ -35,11 +35,12 @@ export default function EditorTabs({
           >
             <span className="truncate max-w-[120px]">{file.name}</span>
             {unsaved && (
-              <Circle
-                size={6}
-                className="shrink-0 fill-neon-amber text-neon-amber"
-                title="Unsaved changes"
-              />
+              <span title="Unsaved changes">
+                <Circle
+                  size={6}
+                  className="shrink-0 fill-neon-amber text-neon-amber"
+                />
+              </span>
             )}
             <button
               onClick={e => { e.stopPropagation(); onClose(id) }}
