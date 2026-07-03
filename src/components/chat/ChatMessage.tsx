@@ -3,16 +3,16 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { Copy, Send, Check, RefreshCw, Edit2, ThumbsUp, ThumbsDown, X } from 'lucide-react'
+import {
+  Copy, Send, Check, RefreshCw,
+  Edit2, ThumbsUp, ThumbsDown, X
+} from 'lucide-react'
 import { Message } from '@/hooks/useAIChat'
 
 interface Props {
   message: Message
   onSendToIDE: (filename: string, content: string) => void
   onRegenerate?: () => void
-  // Edit-and-resend: parent is responsible for removing this message (and
-  // anything after it) before resending, so edits replace rather than
-  // duplicate the conversation.
   onEdit?: (newContent: string) => void
 }
 
@@ -51,62 +51,64 @@ export default function ChatMessage({ message, onSendToIDE, onRegenerate, onEdit
 
   return (
     <div className={`group flex w-full mb-4 ${isUser ? 'justify-end' : 'justify-start'}`}>
-      <div className={`max-w-[88%] rounded px-4 py-3 text-sm
+      <div className={`relative max-w-[88%] rounded px-4 py-3 text-sm
         ${isUser
           ? 'bg-dark-hover border border-neon-purple text-neon-cyan'
           : 'bg-dark-panel border border-dark-border text-gray-200'
         }`}>
 
-        {/* Role badge */}
-        <div className={`mb-2 text-xs font-bold tracking-widest flex items-center justify-between
-          ${isUser ? 'text-neon-purple text-glow-purple' : 'text-neon-green text-glow-green'}`}>
-          <span>{isUser ? '▸ YOU' : '▸ AI'}</span>
+        {/* Role badge + action buttons */}
+        <div className="mb-2 flex items-center justify-between gap-4">
+          <span className={`text-xs font-bold tracking-widest
+            ${isUser ? 'text-neon-purple text-glow-purple' : 'text-neon-green text-glow-green'}`}>
+            {isUser ? '▸ YOU' : '▸ AI'}
+          </span>
 
-          {/* Action buttons — show on hover */}
-          <div className="hidden group-hover:flex items-center gap-2 ml-4">
-            {/* Copy */}
+          {/* Action buttons */}
+          <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
             <button
               onClick={copyMessage}
-              className="text-gray-600 hover:text-neon-cyan transition-colors"
-              title="Copy message"
+              title="Copy"
+              className="text-gray-500 hover:text-neon-cyan transition-colors"
             >
               {copied ? <Check size={12} /> : <Copy size={12} />}
             </button>
 
-            {/* User only: edit */}
             {isUser && onEdit && (
               <button
-                onClick={() => setEditing(true)}
-                className="text-gray-600 hover:text-neon-amber transition-colors"
-                title="Edit message"
+                onClick={() => { setEditing(true); setEditVal(message.content) }}
+                title="Edit & resend"
+                className="text-gray-500 hover:text-neon-amber transition-colors"
               >
                 <Edit2 size={12} />
               </button>
             )}
 
-            {/* AI only: regenerate + thumbs */}
+            {!isUser && onRegenerate && (
+              <button
+                onClick={onRegenerate}
+                title="Regenerate"
+                className="text-gray-500 hover:text-neon-green transition-colors"
+              >
+                <RefreshCw size={12} />
+              </button>
+            )}
+
             {!isUser && (
               <>
-                {onRegenerate && (
-                  <button
-                    onClick={onRegenerate}
-                    className="text-gray-600 hover:text-neon-green transition-colors"
-                    title="Regenerate"
-                  >
-                    <RefreshCw size={12} />
-                  </button>
-                )}
                 <button
                   onClick={() => setLiked(true)}
-                  className={`transition-colors ${liked === true ? 'text-neon-green' : 'text-gray-600 hover:text-neon-green'}`}
                   title="Good response"
+                  className={`transition-colors ${liked === true
+                    ? 'text-neon-green' : 'text-gray-500 hover:text-neon-green'}`}
                 >
                   <ThumbsUp size={12} />
                 </button>
                 <button
                   onClick={() => setLiked(false)}
-                  className={`transition-colors ${liked === false ? 'text-neon-red' : 'text-gray-600 hover:text-neon-red'}`}
                   title="Bad response"
+                  className={`transition-colors ${liked === false
+                    ? 'text-neon-red' : 'text-gray-500 hover:text-neon-red'}`}
                 >
                   <ThumbsDown size={12} />
                 </button>
@@ -122,19 +124,17 @@ export default function ChatMessage({ message, onSendToIDE, onRegenerate, onEdit
               value={editVal}
               onChange={e => setEditVal(e.target.value)}
               rows={4}
+              autoFocus
               className="w-full bg-dark-base border border-neon-purple px-2 py-1
-                text-sm text-neon-green outline-none font-mono resize-none"
+                text-sm text-neon-green outline-none font-mono resize-none rounded"
             />
             <div className="flex gap-2">
-              <button
-                onClick={submitEdit}
-                className="btn-neon text-xs px-3 py-1"
-              >
+              <button onClick={submitEdit} className="btn-neon text-xs px-3 py-1">
                 Resend
               </button>
               <button
                 onClick={() => setEditing(false)}
-                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300"
+                className="text-xs text-gray-500 hover:text-gray-300 flex items-center gap-1"
               >
                 <X size={11} /> Cancel
               </button>
@@ -152,7 +152,10 @@ export default function ChatMessage({ message, onSendToIDE, onRegenerate, onEdit
 
                 if (!isBlock) {
                   return (
-                    <code className="rounded bg-dark-base px-1 py-0.5 text-neon-amber font-mono text-xs" {...props}>
+                    <code
+                      className="rounded bg-dark-base px-1 py-0.5 text-neon-amber font-mono text-xs"
+                      {...props}
+                    >
                       {children}
                     </code>
                   )
@@ -213,7 +216,9 @@ export default function ChatMessage({ message, onSendToIDE, onRegenerate, onEdit
                 </div>
               ),
               th: ({ children }) => (
-                <th className="border border-dark-border bg-dark-hover px-2 py-1 text-neon-cyan text-left">{children}</th>
+                <th className="border border-dark-border bg-dark-hover px-2 py-1 text-neon-cyan text-left">
+                  {children}
+                </th>
               ),
               td: ({ children }) => (
                 <td className="border border-dark-border px-2 py-1 text-gray-300">{children}</td>
