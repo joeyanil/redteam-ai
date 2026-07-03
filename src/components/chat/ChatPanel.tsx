@@ -1,10 +1,13 @@
 import { useEffect, useRef } from 'react'
 import { useAIChat } from '@/hooks/useAIChat'
 import { useToolExecutor } from '@/hooks/useToolExecutor'
+import { useToast } from '@/hooks/useToast'
 import ChatMessage from './ChatMessage'
 import ChatInput from './ChatInput'
 import ConversationSidebar from './ConversationSidebar'
+import ToastContainer from '@/components/ui/Toast'
 import { Zap, Brain } from 'lucide-react'
+import { supabase } from '@/lib/supabase'
 
 const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || ''
 const SUPABASE_ANON_KEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || ''
@@ -24,6 +27,7 @@ export default function ChatPanel({
 }: Props) {
   const chat = useAIChat()
   const tools = useToolExecutor()
+  const { toasts, addToast, removeToast } = useToast()
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -57,6 +61,10 @@ export default function ChatPanel({
       fileSystem,
       async (name, args) => {
         await tools.execute(name, args)
+        addToast(
+          args?.path ? `✓ ${name}: ${args.path}` : `✓ ${name}`,
+          'success'
+        )
       }
     )
   }
@@ -67,7 +75,27 @@ export default function ChatPanel({
     if (lastUserMsg) await handleSend(lastUserMsg.content)
   }
 
-  async function handleEditResend(content: string) {
+  // Editing a user message must remove that message and everything after
+  // it (both locally and in Supabase) before resending — otherwise the
+  // old turn stays in the conversation and you get a duplicate instead of
+  // a true edit.
+  async function handleEditResend(editedMessageId: string, content: string) {
+    const session = chat.activeSession
+    if (!session) return
+
+    const idx = session.messages.findIndex(m => m.id === editedMessageId)
+    if (idx === -1) {
+      await handleSend(content)
+      return
+    }
+
+    const toRemove = session.messages.slice(idx)
+    if (toRemove.length > 0) {
+      const ids = toRemove.map(m => m.id)
+      await supabase.from('messages').delete().in('id', ids)
+    }
+
+    await chat.reload()
     await handleSend(content)
   }
 
@@ -173,7 +201,7 @@ export default function ChatPanel({
               }
               onEdit={
                 msg.role === 'user'
-                  ? (newContent) => handleEditResend(newContent)
+                  ? (newContent) => handleEditResend(msg.id, newContent)
                   : undefined
               }
             />
@@ -195,6 +223,9 @@ export default function ChatPanel({
           onFileAttach={handleFileAttach}
         />
       </div>
+
+      {/* Toast notifications for file operations */}
+      <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>
   )
 }

@@ -1,5 +1,5 @@
 import { useState, useRef, KeyboardEvent } from 'react'
-import { Send, Square, Paperclip } from 'lucide-react'
+import { Send, Square, Paperclip, Loader2 } from 'lucide-react'
 
 interface Props {
   onSend: (content: string) => void
@@ -9,9 +9,12 @@ interface Props {
 }
 
 const ACCEPTED = '.py,.sh,.txt,.md,.json,.yaml,.yml,.go,.rs,.c,.cpp,.js,.ts,.html,.css,.php,.rb'
+const MAX_FILE_BYTES = 512 * 1024 // 512KB — plenty for source files, protects the chat payload
 
 export default function ChatInput({ onSend, onStop, streaming, onFileAttach }: Props) {
   const [value, setValue] = useState('')
+  const [fileError, setFileError] = useState<string | null>(null)
+  const [uploading, setUploading] = useState(false)
   const fileRef = useRef<HTMLInputElement>(null)
 
   function handleSend() {
@@ -29,10 +32,34 @@ export default function ChatInput({ onSend, onStop, streaming, onFileAttach }: P
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
+    e.target.value = '' // always reset input so re-selecting the same file re-fires onChange
     if (!file) return
-    const text = await file.text()
-    onFileAttach(text, file.name)
-    e.target.value = ''
+
+    setFileError(null)
+
+    if (file.size > MAX_FILE_BYTES) {
+      setFileError(`"${file.name}" is too large (${(file.size / 1024).toFixed(0)}KB). Max 512KB.`)
+      setTimeout(() => setFileError(null), 4000)
+      return
+    }
+
+    setUploading(true)
+    try {
+      const text = await file.text()
+      // Guard against binary files slipping through: if the browser had to
+      // insert replacement characters, this almost certainly isn't text.
+      if (text.includes('\uFFFD')) {
+        setFileError(`"${file.name}" looks like a binary file — only text/source files are supported.`)
+        setTimeout(() => setFileError(null), 4000)
+        return
+      }
+      onFileAttach(text, file.name)
+    } catch (err) {
+      setFileError(`Couldn't read "${file.name}": ${String(err)}`)
+      setTimeout(() => setFileError(null), 4000)
+    } finally {
+      setUploading(false)
+    }
   }
 
   return (
@@ -53,10 +80,11 @@ export default function ChatInput({ onSend, onStop, streaming, onFileAttach }: P
           <button
             onClick={() => fileRef.current?.click()}
             title="Attach file"
+            disabled={uploading}
             className="flex h-7 w-7 items-center justify-center rounded
-              text-gray-500 hover:text-neon-cyan transition-colors"
+              text-gray-500 hover:text-neon-cyan transition-colors disabled:opacity-50"
           >
-            <Paperclip size={14} />
+            {uploading ? <Loader2 size={14} className="animate-spin" /> : <Paperclip size={14} />}
           </button>
           <input
             ref={fileRef}
@@ -89,9 +117,13 @@ export default function ChatInput({ onSend, onStop, streaming, onFileAttach }: P
           )}
         </div>
       </div>
-      <p className="mt-1 text-right text-xs text-gray-700">
-        Enter to send · Shift+Enter newline
-      </p>
+      {fileError ? (
+        <p className="mt-1 text-xs text-neon-red">⚠ {fileError}</p>
+      ) : (
+        <p className="mt-1 text-right text-xs text-gray-700">
+          Enter to send · Shift+Enter newline
+        </p>
+      )}
     </div>
   )
 }

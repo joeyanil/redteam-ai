@@ -3,13 +3,16 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter'
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism'
-import { Copy, Send, Check, RefreshCw, Edit2, ThumbsUp, ThumbsDown } from 'lucide-react'
+import { Copy, Send, Check, RefreshCw, Edit2, ThumbsUp, ThumbsDown, X } from 'lucide-react'
 import { Message } from '@/hooks/useAIChat'
 
 interface Props {
   message: Message
   onSendToIDE: (filename: string, content: string) => void
   onRegenerate?: () => void
+  // Edit-and-resend: parent is responsible for removing this message (and
+  // anything after it) before resending, so edits replace rather than
+  // duplicate the conversation.
   onEdit?: (newContent: string) => void
 }
 
@@ -131,9 +134,9 @@ export default function ChatMessage({ message, onSendToIDE, onRegenerate, onEdit
               </button>
               <button
                 onClick={() => setEditing(false)}
-                className="text-xs text-gray-500 hover:text-gray-300"
+                className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300"
               >
-                Cancel
+                <X size={11} /> Cancel
               </button>
             </div>
           </div>
