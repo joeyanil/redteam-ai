@@ -6,8 +6,7 @@ import ChatMessage from './ChatMessage'
 import ChatInput from './ChatInput'
 import ConversationSidebar from './ConversationSidebar'
 import ToastContainer from '@/components/ui/Toast'
-import { Zap, Brain } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
+import { Brain, Zap } from 'lucide-react'
 
 const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || ''
 const SUPABASE_ANON_KEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || ''
@@ -59,44 +58,22 @@ export default function ChatPanel({
       SUPABASE_URL,
       SUPABASE_ANON_KEY,
       fileSystem,
-      async (name, args) => {
-        await tools.execute(name, args)
+      async (op) => {
+        await tools.executeFileOp(op)
         addToast(
-          args?.path ? `✓ ${name}: ${args.path}` : `✓ ${name}`,
+          op.op === 'create'
+            ? `✓ Created: ${op.path}`
+            : `✓ Folder: ${op.path}`,
           'success'
         )
       }
     )
   }
 
-  async function handleRegenerate(msgIndex: number) {
+  async function handleRegenerate(index: number) {
     const messages = chat.activeSession?.messages || []
-    const lastUserMsg = messages.slice(0, msgIndex).reverse().find(m => m.role === 'user')
-    if (lastUserMsg) await handleSend(lastUserMsg.content)
-  }
-
-  // Editing a user message must remove that message and everything after
-  // it (both locally and in Supabase) before resending — otherwise the
-  // old turn stays in the conversation and you get a duplicate instead of
-  // a true edit.
-  async function handleEditResend(editedMessageId: string, content: string) {
-    const session = chat.activeSession
-    if (!session) return
-
-    const idx = session.messages.findIndex(m => m.id === editedMessageId)
-    if (idx === -1) {
-      await handleSend(content)
-      return
-    }
-
-    const toRemove = session.messages.slice(idx)
-    if (toRemove.length > 0) {
-      const ids = toRemove.map(m => m.id)
-      await supabase.from('messages').delete().in('id', ids)
-    }
-
-    await chat.reload()
-    await handleSend(content)
+    const lastUser = messages.slice(0, index).reverse().find(m => m.role === 'user')
+    if (lastUser) await handleSend(lastUser.content)
   }
 
   function handleFileAttach(text: string, filename: string) {
@@ -150,23 +127,20 @@ export default function ChatPanel({
         {/* Thinking indicator */}
         {chat.thinking.active && (
           <div className="flex items-center gap-2 border-b border-dark-border bg-dark-panel px-3 py-1.5">
-            <Brain size={12} className="text-neon-purple animate-pulse" />
-            <span className="text-xs text-neon-purple animate-pulse">
+            <Brain size={12} className="text-neon-purple animate-pulse shrink-0" />
+            <span className="text-xs text-neon-purple truncate">
               {chat.thinking.status}
             </span>
           </div>
         )}
 
-        {/* Agent actions */}
+        {/* Agent actions bar */}
         {chat.agentActions.length > 0 && !chat.thinking.active && (
           <div className="flex flex-wrap gap-2 border-b border-dark-border bg-dark-panel px-3 py-1.5">
             {chat.agentActions.map((a, i) => (
               <span key={i} className="flex items-center gap-1 text-xs text-neon-amber">
                 <Zap size={10} />
-                {a.name}
-                {a.args?.path && (
-                  <span className="text-neon-cyan">→ {a.args.path}</span>
-                )}
+                <span className="text-neon-cyan">{a.path}</span>
               </span>
             ))}
           </div>
@@ -183,7 +157,7 @@ export default function ChatPanel({
               </p>
               <div className="mt-2 flex flex-col gap-1 text-xs text-gray-700">
                 <span>↳ AI creates files autonomously</span>
-                <span>↳ Streaming tool calls</span>
+                <span>↳ Real-time streaming</span>
                 <span>↳ Full security context</span>
               </div>
             </div>
@@ -201,7 +175,7 @@ export default function ChatPanel({
               }
               onEdit={
                 msg.role === 'user'
-                  ? (newContent) => handleEditResend(msg.id, newContent)
+                  ? (newContent) => handleSend(newContent)
                   : undefined
               }
             />
@@ -224,7 +198,7 @@ export default function ChatPanel({
         />
       </div>
 
-      {/* Toast notifications for file operations */}
+      {/* Toast notifications */}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>
   )
