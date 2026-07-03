@@ -24,13 +24,13 @@ function groupSessions(sessions: Session[]) {
     'Older': [],
   }
 
-  for (const s of sessions) {
+  sessions.forEach(s => {
     const d = new Date(s.createdAt)
     if (d >= today) groups['Today'].push(s)
     else if (d >= yesterday) groups['Yesterday'].push(s)
     else if (d >= last7) groups['Last 7 Days'].push(s)
     else groups['Older'].push(s)
-  }
+  })
 
   return groups
 }
@@ -50,20 +50,17 @@ export default function ConversationSidebar({
   }
 
   function confirmRename() {
-    if (renamingId && renameVal.trim()) {
-      onRename(renamingId, renameVal.trim())
-    }
+    if (renamingId && renameVal.trim()) onRename(renamingId, renameVal.trim())
     setRenamingId(null)
   }
 
-  function handleDeleteClick(id: string) {
+  function handleDelete(id: string) {
     if (confirmDeleteId === id) {
       onDelete(id)
       setConfirmDeleteId(null)
     } else {
       setConfirmDeleteId(id)
-      // auto-reset the confirm state after 3s if they don't click again
-      setTimeout(() => setConfirmDeleteId(curr => curr === id ? null : curr), 3000)
+      setTimeout(() => setConfirmDeleteId(null), 3000)
     }
   }
 
@@ -83,25 +80,25 @@ export default function ConversationSidebar({
         </button>
       </div>
 
-      {/* Session list, grouped by date */}
+      {/* Session list grouped */}
       <div className="flex-1 overflow-y-auto">
         {sessions.length === 0 && (
           <p className="px-3 py-4 text-xs text-gray-700">No sessions yet</p>
         )}
 
-        {Object.entries(groups).map(([label, items]) => {
+        {Object.entries(groups).map(([group, items]) => {
           if (items.length === 0) return null
           return (
-            <div key={label}>
-              <div className="px-3 py-1.5 text-xs font-bold tracking-widest uppercase text-gray-700">
-                {label}
+            <div key={group}>
+              <div className="px-3 py-1.5 text-xs text-gray-700 font-bold tracking-widest uppercase">
+                {group}
               </div>
               {items.map(s => (
                 <div
                   key={s.id}
                   onClick={() => onSelect(s.id)}
-                  className={`group flex cursor-pointer flex-col border-b border-dark-border px-3 py-2
-                    text-xs transition-all
+                  className={`group flex cursor-pointer flex-col border-b border-dark-border
+                    px-3 py-2 text-xs transition-all
                     ${s.id === activeSessionId
                       ? 'bg-dark-hover text-neon-green border-l-2 border-l-neon-purple'
                       : 'text-gray-500 hover:bg-dark-hover hover:text-gray-300'
@@ -117,19 +114,20 @@ export default function ConversationSidebar({
                           if (e.key === 'Enter') confirmRename()
                           if (e.key === 'Escape') setRenamingId(null)
                         }}
-                        className="flex-1 bg-dark-base border border-neon-purple px-1 text-neon-green outline-none text-xs"
+                        className="flex-1 bg-dark-base border border-neon-purple px-1
+                          text-neon-green outline-none text-xs"
                       />
                       <button onClick={confirmRename} className="text-neon-green hover:text-white">
-                        <Check size={11} />
+                        <Check size={10} />
                       </button>
                       <button onClick={() => setRenamingId(null)} className="text-gray-500 hover:text-neon-red">
-                        <X size={11} />
+                        <X size={10} />
                       </button>
                     </div>
                   ) : (
                     <div className="flex items-start justify-between gap-1">
-                      <div className="flex items-start gap-1.5 min-w-0 flex-1">
-                        <MessageSquare size={11} className="mt-0.5 shrink-0 opacity-50" />
+                      <div className="flex items-start gap-1.5 flex-1 min-w-0">
+                        <MessageSquare size={11} className="shrink-0 mt-0.5 opacity-50" />
                         <span className="truncate leading-tight">{s.title}</span>
                       </div>
                       <div className="hidden group-hover:flex items-center gap-1 shrink-0">
@@ -138,18 +136,18 @@ export default function ConversationSidebar({
                           className="text-gray-600 hover:text-neon-cyan transition-colors"
                           title="Rename"
                         >
-                          <Edit2 size={11} />
+                          <Edit2 size={10} />
                         </button>
                         <button
-                          onClick={e => { e.stopPropagation(); handleDeleteClick(s.id) }}
+                          onClick={e => { e.stopPropagation(); handleDelete(s.id) }}
                           className={`transition-colors ${
                             confirmDeleteId === s.id
                               ? 'text-neon-red animate-pulse'
                               : 'text-gray-600 hover:text-neon-red'
                           }`}
-                          title={confirmDeleteId === s.id ? 'Click again to confirm delete' : 'Delete'}
+                          title={confirmDeleteId === s.id ? 'Click again to confirm' : 'Delete'}
                         >
-                          <Trash2 size={11} />
+                          <Trash2 size={10} />
                         </button>
                       </div>
                     </div>
