@@ -1,53 +1,21 @@
 import { useCallback } from 'react'
 import { useFileSystem } from './useFileSystem'
+import { FileOp } from './useAIChat'
 
 export function useToolExecutor() {
   const fs = useFileSystem()
 
-  const execute = useCallback(async (name: string, args: Record<string, any>) => {
-    if (!args?.path) {
-      console.error(`Tool error [${name}]: missing "path" argument`, args)
-      return
-    }
+  const executeFileOp = useCallback(async (op: FileOp) => {
     try {
-      switch (name) {
-        case 'create_file': {
-          const fileName = args.path.split('/').pop() || args.path
-          await fs.injectFile(fileName, args.content || '')
-          break
-        }
-        case 'edit_file': {
-          const fileName = args.path.split('/').pop() || args.path
-          function findNode(nodes: any[], name: string): any {
-            for (const n of nodes) {
-              if (n.name === name) return n
-              if (n.children) {
-                const f = findNode(n.children, name)
-                if (f) return f
-              }
-            }
-            return null
-          }
-          const node = fs.activeProject
-            ? findNode(fs.activeProject.root, fileName)
-            : null
-          if (node) {
-            await fs.updateFileContent(node.id, args.content || '')
-          } else {
-            await fs.injectFile(fileName, args.content || '')
-          }
-          break
-        }
-        case 'create_folder': {
-          const folderName = args.path.replace(/\/$/, '').split('/').pop() || args.path
-          await fs.createFolder(folderName)
-          break
-        }
-        default:
-          console.error(`Tool error: unknown tool "${name}"`)
+      if (op.op === 'folder') {
+        const name = op.path.replace(/\/$/, '').split('/').pop() || op.path
+        await fs.createFolder(name)
+      } else if (op.op === 'create') {
+        const name = op.path.split('/').pop() || op.path
+        await fs.injectFile(name, op.content || '')
       }
     } catch (err) {
-      console.error(`Tool error [${name}]:`, err)
+      console.error(`FileOp error [${op.op}] ${op.path}:`, err)
     }
   }, [fs])
 
@@ -63,5 +31,5 @@ export function useToolExecutor() {
     return flatten(fs.activeProject.root)
   }
 
-  return { execute, getFileSystemSnapshot }
+  return { executeFileOp, getFileSystemSnapshot }
 }
