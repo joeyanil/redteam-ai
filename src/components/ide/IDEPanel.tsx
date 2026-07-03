@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels'
+import { Download } from 'lucide-react'
 import { useFileSystem } from '@/hooks/useFileSystem'
 import { usePiston } from '@/hooks/usePiston'
 import FileTree from './FileTree'
@@ -16,6 +17,8 @@ export default function IDEPanel({ onAskAI }: Props) {
   const fs = useFileSystem()
   const piston = usePiston()
   const [, setForce] = useState(0)
+  const [unsavedIds, setUnsavedIds] = useState<Set<string>>(new Set())
+  const saveTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
 
   function getFileNode(id: string) {
     function find(nodes: any[]): any {
@@ -41,6 +44,37 @@ export default function IDEPanel({ onAskAI }: Props) {
     if (!currentFile || !onAskAI) return
     const msg = `Review this file (${currentFile.name}):\n\`\`\`\n${currentFile.content}\n\`\`\``
     onAskAI(msg)
+  }
+
+  function handleDownload() {
+    if (!currentFile) return
+    const blob = new Blob([currentFile.content || ''], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = currentFile.name
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  // Content changes mark the tab "unsaved" immediately, then clear once
+  // the debounced Supabase write in useFileSystem has had time to land.
+  function handleContentChange(content: string) {
+    if (!fs.activeFileId) return
+    const id = fs.activeFileId
+    setUnsavedIds(prev => new Set(prev).add(id))
+    fs.updateFileContent(id, content)
+
+    if (saveTimers.current[id]) clearTimeout(saveTimers.current[id])
+    saveTimers.current[id] = setTimeout(() => {
+      setUnsavedIds(prev => {
+        const next = new Set(prev)
+        next.delete(id)
+        return next
+      })
+    }, 600)
   }
 
   // Adapter — FileTree expects (name, parentId: string | null)
@@ -88,27 +122,38 @@ export default function IDEPanel({ onAskAI }: Props) {
               getFile={getFileNode}
               onSelect={fs.openFile}
               onClose={fs.closeFile}
+              unsavedIds={unsavedIds}
             />
             <div className="flex-1 overflow-hidden">
               <PanelGroup direction="vertical">
                 <Panel defaultSize={65} minSize={30}>
                   <div className="h-full flex flex-col">
-                    {currentFile && onAskAI && (
-                      <div className="flex justify-end border-b border-dark-border bg-dark-panel px-2 py-1">
-                        <button
-                          onClick={handleAskAI}
-                          className="text-xs text-gray-600 hover:text-neon-cyan transition-colors"
-                        >
-                          ⬡ Ask AI about this file
-                        </button>
+                    {currentFile && (
+                      <div className="flex items-center justify-between border-b border-dark-border bg-dark-panel px-2 py-1">
+                        <span className="text-xs text-gray-700 truncate">{currentFile.name}</span>
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={handleDownload}
+                            className="flex items-center gap-1 text-xs text-gray-600 hover:text-neon-cyan transition-colors"
+                            title="Download file"
+                          >
+                            <Download size={12} />
+                          </button>
+                          {onAskAI && (
+                            <button
+                              onClick={handleAskAI}
+                              className="text-xs text-gray-600 hover:text-neon-cyan transition-colors"
+                            >
+                              ⬡ Ask AI about this file
+                            </button>
+                          )}
+                        </div>
                       </div>
                     )}
                     <div className="flex-1">
                       <CodeEditor
                         file={currentFile}
-                        onChange={content => {
-                          if (fs.activeFileId) fs.updateFileContent(fs.activeFileId, content)
-                        }}
+                        onChange={handleContentChange}
                       />
                     </div>
                   </div>
