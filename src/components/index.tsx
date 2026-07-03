@@ -6,6 +6,7 @@
 // ============================================================
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels'
 import Editor from '@monaco-editor/react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -20,8 +21,8 @@ import {
 } from 'lucide-react'
 import {
   useAIChat, useFileSystem, usePiston, useToast,
-  FileOp, FileNode, Message, Session, Toast,
-} from './hooks/index'
+  FileOp, FileNode, Message, Session, Toast, PistonResult,
+} from '@/hooks/index'
 
 // ============================================================
 // TOAST
@@ -731,8 +732,6 @@ export function CodeEditor({ file, onChange }: { file: FileNode | null; onChange
 // TERMINAL
 // ============================================================
 
-import { PistonResult } from './hooks/index'
-
 export function Terminal({ result, running, onClear }: {
   result: PistonResult | null; running: boolean; onClear: () => void
 }) {
@@ -794,8 +793,6 @@ export function RunControls({ activeFile, running, onRun, detectedLang }: {
 // ============================================================
 // IDE PANEL
 // ============================================================
-
-import { PanelGroup, Panel, PanelResizeHandle } from 'react-resizable-panels'
 
 export function IDEPanel({ onAskAI }: { onAskAI?: (content: string) => void }) {
   const fs = useFileSystem()
