@@ -276,14 +276,28 @@ export function useAIChat() {
               }
 
               else if (currentEvent === 'file_op') {
-                const op = data as FileOp
-                setAgentActions(prev => [...prev, {
-                  name: op.op === 'create' ? 'create_file' : 'create_folder',
-                  path: op.path,
-                  success: true,
-                }])
-                if (onFileOp) await onFileOp(op)
-              }
+  const op = data as FileOp
+
+  const toolName =
+    op.op === 'create'
+      ? 'create_file'
+      : op.op === 'edit'
+      ? 'edit_file'
+      : 'create_folder'
+
+  setAgentActions(prev => [
+    ...prev,
+    {
+      name: toolName,
+      path: op.path,
+      success: true,
+    },
+  ])
+
+  if (onFileOp) {
+    await onFileOp(op)
+  }
+}
 
               else if (currentEvent === 'text_delta') {
                 finalContent = data.content
