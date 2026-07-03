@@ -30,7 +30,7 @@ export type ThinkingState = {
 }
 
 export type FileOp = {
-  op: 'create' | 'folder'
+  op: 'create' | 'edit' | 'folder'
   path: string
   content?: string
 }
