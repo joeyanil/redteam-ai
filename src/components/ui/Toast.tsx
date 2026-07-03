@@ -15,7 +15,7 @@ export default function ToastContainer({ toasts, onRemove }: Props) {
         <div
           key={t.id}
           className={`flex items-center gap-2 rounded border px-3 py-2 text-xs font-mono
-            shadow-lg backdrop-blur-sm transition-all animate-in fade-in slide-in-from-bottom-2
+            shadow-lg backdrop-blur-sm transition-all
             ${t.type === 'success'
               ? 'border-neon-green bg-dark-panel text-neon-green'
               : t.type === 'error'
