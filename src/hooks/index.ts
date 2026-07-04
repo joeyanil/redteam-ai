@@ -200,7 +200,6 @@ export function useFileSystem() {
   }
 
   async function updateFileContent(id: string, content: string) {
-    // Optimistic local update
     setProjects(prev => prev.map(p => {
       if (p.id !== activeProject?.id) return p
       const update = (nodes: FileNode[]): FileNode[] =>
@@ -235,24 +234,105 @@ export function useFileSystem() {
     return activeProject ? find(activeProject.root) : null
   }
 
-  async function injectFile(name: string, content: string) {
+  // ============================================================
+  // FIXED injectFile — handles full nested paths correctly
+  // e.g. "termux_toolkit/hunt.sh" → creates inside folder
+  // e.g. "hunt.sh" → creates at root
+  // Auto-opens file after creation
+  // ============================================================
+  async function injectFile(filePath: string, content: string) {
     if (!activeProject) return
-    const findByName = (nodes: FileNode[]): FileNode | null => {
+
+    // Normalize path — strip leading slash
+    const normalized = filePath.replace(/^\//, '')
+    const parts = normalized.split('/').filter(Boolean)
+    const name = parts[parts.length - 1]
+    const folderParts = parts.slice(0, -1)
+
+    // Find existing file by walking the tree via full path
+    const findByPath = (nodes: FileNode[], pathParts: string[]): FileNode | null => {
+      const [current, ...rest] = pathParts
       for (const n of nodes) {
-        if (n.name === name) return n
-        if (n.children) { const f = findByName(n.children); if (f) return f }
+        if (n.name === current) {
+          if (rest.length === 0) return n
+          if (n.children) return findByPath(n.children, rest)
+        }
       }
       return null
     }
-    const existing = findByName(activeProject.root)
+
+    const existing = findByPath(activeProject.root, parts)
     if (existing) {
       await updateFileContent(existing.id, content)
       openFile(existing.id)
-    } else {
-      const { data } = await supabase.from('files').insert({
-        project_id: activeProject.id, name, path: '/', content, type: 'file',
-      }).select().single()
-      if (data) { await loadProjects(); openFile(data.id) }
+      return
+    }
+
+    // Ensure all parent folders exist, create if missing
+    let parentDbPath = '/'
+
+    if (folderParts.length > 0) {
+      let currentNodes = activeProject.root
+      let currentDbPath = '/'
+
+      for (const folderName of folderParts) {
+        const existingFolder = currentNodes.find(
+          n => n.name === folderName && n.type === 'folder'
+        )
+
+        if (existingFolder) {
+          // Folder exists — compute its DB path
+          currentDbPath = existingFolder.path === '/'
+            ? `/${existingFolder.name}`
+            : `${existingFolder.path}/${existingFolder.name}`
+          currentNodes = existingFolder.children || []
+        } else {
+          // Create missing folder at current level
+          await supabase.from('files').insert({
+            project_id: activeProject.id,
+            name: folderName,
+            path: currentDbPath,
+            content: '',
+            type: 'folder',
+          })
+          await loadProjects()
+
+          // Find newly created folder in refreshed tree
+          const refreshed = projects.find(p => p.id === activeProject.id)
+          const findFolder = (nodes: FileNode[], n: string): FileNode | null => {
+            for (const node of nodes) {
+              if (node.name === n && node.type === 'folder') return node
+              if (node.children) {
+                const f = findFolder(node.children, n)
+                if (f) return f
+              }
+            }
+            return null
+          }
+          const newFolder = findFolder(refreshed?.root || [], folderName)
+          currentDbPath = newFolder
+            ? (newFolder.path === '/' ? `/${newFolder.name}` : `${newFolder.path}/${newFolder.name}`)
+            : `${currentDbPath}/${folderName}`
+          currentNodes = newFolder?.children || []
+        }
+      }
+
+      parentDbPath = currentDbPath
+    }
+
+    // Insert file at correct nested path
+    const { data } = await supabase.from('files').insert({
+      project_id: activeProject.id,
+      name,
+      path: parentDbPath,
+      content,
+      type: 'file',
+    }).select().single()
+
+    if (data) {
+      await loadProjects()
+      // Small delay so tree refreshes before we open
+      setTimeout(() => openFile(data.id), 150)
     }
   }
 
